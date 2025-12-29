@@ -2,14 +2,59 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ZEBROL</title>
-  <script src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="estilo.css">
 </head>
 <body>
-  <div id="root"></div>
-  <script src="app.js"></script>
+
+<h1>ZEBROL</h1>
+
+<div id="grid" class="grid"></div>
+
+<button id="btnAdd" class="fab">+</button>
+
+<!-- MODAL DETALHES -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <button class="close" onclick="fecharModal()">Fechar</button>
+    <img id="dFoto">
+    <p><b>Nome:</b> <span id="dNome"></span></p>
+    <p><b>CPF:</b> <span id="dCpf"></span></p>
+    <p><b>Nascimento:</b> <span id="dBirth"></span></p>
+    <p><b>Mãe:</b> <span id="dMother"></span></p>
+    <p><b>Endereço:</b> <span id="dAddress"></span></p>
+    <p><b>Descrição:</b> <span id="dDesc"></span></p>
+
+    <span class="edit" onclick="editar()">✏️</span>
+    <span class="delete" onclick="confirmarDelete()">🗑️</span>
+  </div>
+</div>
+
+<!-- MODAL FORM -->
+<div id="formModal" class="modal hidden">
+  <div class="modal-box">
+    <h2 id="formTitle">Novo Cadastro</h2>
+    <input type="file" id="image">
+    <input id="name" placeholder="Nome">
+    <input id="cpf" placeholder="CPF">
+    <input type="date" id="birth">
+    <input id="mother" placeholder="Nome da mãe">
+    <input id="address" placeholder="Endereço">
+    <textarea id="desc" placeholder="Descrição"></textarea>
+    <button onclick="salvar()">Salvar</button>
+  </div>
+</div>
+
+<!-- MODAL CONFIRM -->
+<div id="confirm" class="modal hidden">
+  <div class="modal-box">
+    <p>Tem certeza que deseja excluir?</p>
+    <button onclick="excluir()">Sim</button>
+    <button onclick="fecharConfirm()">Não</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
 </body>
 </html>
