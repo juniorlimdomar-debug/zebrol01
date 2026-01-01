@@ -2,155 +2,159 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ZEBROL</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- React -->
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Firebase -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getAuth, signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    window.firebaseModules = {
-      initializeApp,
-      getAuth,
-      signInWithEmailAndPassword,
-      getFirestore,
-      collection,
-      getDocs
-    };
-  </script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 </head>
 
-<body class="bg-black">
-  <div id="root"></div>
+<body class="bg-black text-white">
+<div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useEffect } = React;
+<script type="text/babel">
+const { useState, useEffect } = React;
 
-    function App() {
-      const [logged, setLogged] = useState(false);
-      const [password, setPassword] = useState("");
-      const [items, setItems] = useState([]);
-      const [selected, setSelected] = useState(null);
-      const [search, setSearch] = useState("");
+const firebaseConfig = {
+  apiKey: "AIzaSyBAH2rBIR5ibvde0VMVF38QyM4L2s8IqIQ",
+  authDomain: "zebrol.firebaseapp.com",
+  projectId: "zebrol",
+  appId: "1:846397475446:web:1b38ce35dcae4e1754ed57"
+};
 
-      useEffect(() => {
-        const { initializeApp, getFirestore, collection, getDocs } = window.firebaseModules;
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
 
-        const app = initializeApp({
-          apiKey: "AIzaSyBAH2rBIR5ibvde0VMVF38QyM4L2s8IqIQ",
-          authDomain: "zebrol.firebaseapp.com",
-          projectId: "zebrol"
-        });
+function App() {
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
-        const db = getFirestore(app);
+  const [items, setItems] = useState([]);
+  const [selectedItem, setSelectedItem] = useState(null);
 
-        getDocs(collection(db, "pessoas")).then(snapshot => {
-          const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          setItems(data);
-        });
-      }, []);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [showForm, setShowForm] = useState(false);
 
-      if (!logged) {
-        return (
-          <div className="min-h-screen flex items-center justify-center">
-            <div className="bg-gray-900 p-6 rounded-xl w-72 space-y-4">
-              <h1 className="text-white text-xl text-center font-bold">ZEBROL</h1>
-              <input
-                type="password"
-                inputMode="numeric"
-                placeholder="Senha"
-                className="w-full p-2 rounded bg-gray-800 text-white"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-              />
-              <button
-                onClick={() => password === "1234" && setLogged(true)}
-                className="w-full bg-blue-600 p-2 rounded font-semibold"
-              >
-                Entrar
-              </button>
-            </div>
-          </div>
-        );
-      }
+  const emptyForm = {
+    image: "", name: "", vulgo: "", faction: "",
+    cpf: "", birth: "", mother: "", address: "", description: ""
+  };
 
-      const filtered = items
-        .filter(i =>
-          [i.name, i.vulgo, i.faccao].join(" ").toLowerCase().includes(search.toLowerCase())
-        )
-        .sort((a, b) => a.name.localeCompare(b.name));
+  const [form, setForm] = useState(emptyForm);
 
-      return (
-        <div className="min-h-screen text-white p-6 space-y-6">
-          <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
+  useEffect(() => auth.onAuthStateChanged(u => setUser(u)), []);
 
-          <input
-            placeholder="Pesquisar..."
-            className="w-full max-w-md mx-auto block bg-gray-800 p-2 rounded"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-
-          <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
-            {filtered.map(item => (
-              <div
-                key={item.id}
-                onClick={() => setSelected(item)}
-                className="bg-gray-900 p-4 rounded-xl cursor-pointer hover:bg-gray-800"
-              >
-                <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
-                  {item.image && (
-                    <img src={item.image} className="w-full h-full object-cover" />
-                  )}
-                </div>
-                <p className="text-center font-semibold">{item.name}</p>
-              </div>
-            ))}
-          </div>
-
-          {selected && (
-            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-50">
-              <div className="bg-gray-900 p-6 rounded-xl max-w-sm w-full space-y-3">
-                <button
-                  className="text-red-400 text-sm float-right"
-                  onClick={() => setSelected(null)}
-                >
-                  Fechar
-                </button>
-
-                {selected.image && (
-                  <img
-                    src={selected.image}
-                    className="w-full h-56 object-contain bg-black rounded"
-                  />
-                )}
-
-                <p><b>Nome:</b> {selected.name}</p>
-                <p><b>Vulgo:</b> {selected.vulgo}</p>
-                <p><b>Facção:</b> {selected.faccao}</p>
-                <p><b>CPF:</b> {selected.cpf}</p>
-                <p><b>Nascimento:</b> {selected.birth}</p>
-                <p><b>Mãe:</b> {selected.mother}</p>
-                <p><b>Endereço:</b> {selected.address}</p>
-                <p><b>Descrição:</b> {selected.description}</p>
-              </div>
-            </div>
-          )}
-        </div>
+  useEffect(() => {
+    if (!user) return;
+    return db.collection("users").doc(user.uid).collection("items")
+      .onSnapshot(s =>
+        setItems(s.docs.map(d => ({ id: d.id, ...d.data() })))
       );
-    }
+  }, [user]);
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-  </script>
+  const login = async () => {
+    try {
+      await auth.signInWithEmailAndPassword(email, password);
+    } catch {
+      alert("Erro ao entrar");
+    }
+  };
+
+  const handleChange = e => {
+    const { name, value, files } = e.target;
+    if (files?.[0]) {
+      const r = new FileReader();
+      r.onload = () => setForm(p => ({ ...p, [name]: r.result }));
+      r.readAsDataURL(files[0]);
+    } else {
+      setForm(p => ({ ...p, [name]: value }));
+    }
+  };
+
+  const saveItem = async () => {
+    await db.collection("users").doc(user.uid).collection("items").add(form);
+    setForm(emptyForm);
+    setShowForm(false);
+  };
+
+  const filteredItems = items
+    .filter(i => [i.name, i.vulgo, i.faction].join(" ").toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <h1 className="text-3xl font-bold">ZEBROL</h1>
+        <input className="bg-gray-800 p-2 rounded w-64" placeholder="Email" onChange={e => setEmail(e.target.value)} />
+        <input type="password" className="bg-gray-800 p-2 rounded w-64" placeholder="Senha" onChange={e => setPassword(e.target.value)} />
+        <button onClick={login} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen p-6 space-y-6">
+      <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
+
+      {searchOpen && (
+        <input className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+          placeholder="Pesquisar nome, vulgo ou facção"
+          value={search} onChange={e => setSearch(e.target.value)} />
+      )}
+
+      <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+        {filteredItems.map(item => (
+          <div key={item.id}
+            onClick={() => setSelectedItem(item)}
+            className="bg-gray-900 p-4 rounded cursor-pointer">
+            <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
+              {item.image && <img src={item.image} className="w-full h-full object-cover" />}
+            </div>
+            <p className="text-center font-semibold">{item.name}</p>
+            <p className="text-center text-sm text-gray-400">{item.vulgo}</p>
+          </div>
+        ))}
+      </div>
+
+      {selectedItem && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-900 p-6 rounded w-full max-w-sm space-y-2">
+            <button onClick={() => setSelectedItem(null)} className="text-red-400 text-sm">Fechar</button>
+            {selectedItem.image && (
+              <img src={selectedItem.image} className="w-full h-56 object-contain bg-black rounded" />
+            )}
+            <p><b>Nome:</b> {selectedItem.name}</p>
+            <p><b>Vulgo:</b> {selectedItem.vulgo}</p>
+            <p><b>Facção:</b> {selectedItem.faction}</p>
+            <p><b>CPF:</b> {selectedItem.cpf}</p>
+            <p><b>Nascimento:</b> {selectedItem.birth}</p>
+            <p><b>Mãe:</b> {selectedItem.mother}</p>
+            <p><b>Endereço:</b> {selectedItem.address}</p>
+            <p><b>Descrição:</b> {selectedItem.description}</p>
+          </div>
+        </div>
+      )}
+
+      <button onClick={() => setSearchOpen(!searchOpen)}
+        className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full flex items-center justify-center text-2xl">🔍</button>
+
+      <button onClick={() => setShowForm(true)}
+        className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full flex items-center justify-center text-3xl">+</button>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
 </body>
 </html>
