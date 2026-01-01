@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ZEBROL</title>
 
-  <!-- Tailwind CDN -->
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
 
   <!-- React -->
@@ -32,6 +32,9 @@
       const [showForm, setShowForm] = useState(false);
       const [editIndex, setEditIndex] = useState(null);
       const [confirmDelete, setConfirmDelete] = useState(null);
+
+      const [showSearch, setShowSearch] = useState(false);
+      const [searchTerm, setSearchTerm] = useState("");
 
       const [form, setForm] = useState({
         image: "",
@@ -88,13 +91,37 @@
         setSelected(null);
       };
 
+      const filteredItems = [...items]
+        .filter((item) => {
+          const term = searchTerm.toLowerCase();
+          return (
+            (item.name || "").toLowerCase().includes(term) ||
+            (item.vulgo || "").toLowerCase().includes(term) ||
+            (item.faction || "").toLowerCase().includes(term)
+          );
+        })
+        .sort((a, b) =>
+          (a.name || "").localeCompare(b.name || "", "pt-BR", { sensitivity: "base" })
+        );
+
       return (
-        <div className="min-h-screen p-6 space-y-8">
+        <div className="min-h-screen p-6 space-y-6">
           <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
 
-          <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
-            {[...items] .sort((a, b) => (a.name || "").localeCompare(b.name || "", "pt-BR", { sensitivity: "base", })) .map((item, index) => (
+          {showSearch && (
+            <div className="max-w-md mx-auto">
+              <input
+                type="text"
+                placeholder="Pesquisar por nome, vulgo ou facção..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 p-3 rounded-xl text-white focus:outline-none"
+              />
+            </div>
+          )}
 
+          <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+            {filteredItems.map((item, index) => (
               <div
                 key={index}
                 onClick={() => setSelected({ item, index })}
@@ -120,7 +147,11 @@
                 <button onClick={() => setSelected(null)} className="absolute top-2 right-3 text-red-400">Fechar</button>
 
                 {selected.item.image && (
-                 <img src={selected.item.image} className="w-full max-h-80 object-contain rounded mb-2 bg-black" />)}
+                  <img
+                    src={selected.item.image}
+                    className="w-full max-h-80 object-contain rounded mb-2 bg-black"
+                  />
+                )}
 
                 <p><strong>Nome:</strong> {selected.item.name}</p>
                 <p><strong>Vulgo:</strong> {selected.item.vulgo}</p>
@@ -164,6 +195,16 @@
             </div>
           )}
 
+          <!-- Botão lupa -->
+          <button
+            onClick={() => setShowSearch(!showSearch)}
+            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full flex items-center justify-center text-2xl shadow-2xl hover:bg-gray-700"
+            title="Pesquisar"
+          >
+            🔍
+          </button>
+
+          <!-- Botão adicionar -->
           <button
             onClick={() => setShowForm(true)}
             className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl font-bold"
@@ -204,6 +245,5 @@
 
     ReactDOM.createRoot(document.getElementById("root")).render(<App />);
   </script>
-
 </body>
 </html>
