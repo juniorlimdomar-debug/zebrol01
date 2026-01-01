@@ -8,127 +8,149 @@
   <!-- React -->
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-
-  <!-- Firebase -->
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Firebase -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    window.firebaseModules = {
+      initializeApp,
+      getAuth,
+      signInWithEmailAndPassword,
+      getFirestore,
+      collection,
+      getDocs
+    };
+  </script>
 </head>
 
-<body class="bg-black text-white">
+<body class="bg-black">
   <div id="root"></div>
 
-  <script>
-    firebase.initializeApp({
-      apiKey: "SUA_API_KEY",
-      authDomain: "zebrol.firebaseapp.com",
-      projectId: "zebrol",
-    });
-
-    const auth = firebase.auth();
-    const db = firebase.firestore();
-  </script>
-
-  <script>
-    const e = React.createElement;
+  <script type="text/babel">
     const { useState, useEffect } = React;
 
     function App() {
+      const [logged, setLogged] = useState(false);
+      const [password, setPassword] = useState("");
       const [items, setItems] = useState([]);
       const [selected, setSelected] = useState(null);
       const [search, setSearch] = useState("");
-      const [showSearch, setShowSearch] = useState(false);
 
       useEffect(() => {
-        auth.signInAnonymously();
+        const { initializeApp, getFirestore, collection, getDocs } = window.firebaseModules;
 
-        db.collection("pessoas").onSnapshot((snap) => {
-          const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-          data.sort((a, b) => a.name.localeCompare(b.name));
+        const app = initializeApp({
+          apiKey: "AIzaSyBAH2rBIR5ibvde0VMVF38QyM4L2s8IqIQ",
+          authDomain: "zebrol.firebaseapp.com",
+          projectId: "zebrol"
+        });
+
+        const db = getFirestore(app);
+
+        getDocs(collection(db, "pessoas")).then(snapshot => {
+          const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
           setItems(data);
         });
       }, []);
 
-      const filtered = items.filter(i =>
-        `${i.name} ${i.vulgo} ${i.faccao}`
-          .toLowerCase()
-          .includes(search.toLowerCase())
+      if (!logged) {
+        return (
+          <div className="min-h-screen flex items-center justify-center">
+            <div className="bg-gray-900 p-6 rounded-xl w-72 space-y-4">
+              <h1 className="text-white text-xl text-center font-bold">ZEBROL</h1>
+              <input
+                type="password"
+                inputMode="numeric"
+                placeholder="Senha"
+                className="w-full p-2 rounded bg-gray-800 text-white"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+              <button
+                onClick={() => password === "1234" && setLogged(true)}
+                className="w-full bg-blue-600 p-2 rounded font-semibold"
+              >
+                Entrar
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      const filtered = items
+        .filter(i =>
+          [i.name, i.vulgo, i.faccao].join(" ").toLowerCase().includes(search.toLowerCase())
+        )
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      return (
+        <div className="min-h-screen text-white p-6 space-y-6">
+          <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
+
+          <input
+            placeholder="Pesquisar..."
+            className="w-full max-w-md mx-auto block bg-gray-800 p-2 rounded"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+
+          <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+            {filtered.map(item => (
+              <div
+                key={item.id}
+                onClick={() => setSelected(item)}
+                className="bg-gray-900 p-4 rounded-xl cursor-pointer hover:bg-gray-800"
+              >
+                <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
+                  {item.image && (
+                    <img src={item.image} className="w-full h-full object-cover" />
+                  )}
+                </div>
+                <p className="text-center font-semibold">{item.name}</p>
+              </div>
+            ))}
+          </div>
+
+          {selected && (
+            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-50">
+              <div className="bg-gray-900 p-6 rounded-xl max-w-sm w-full space-y-3">
+                <button
+                  className="text-red-400 text-sm float-right"
+                  onClick={() => setSelected(null)}
+                >
+                  Fechar
+                </button>
+
+                {selected.image && (
+                  <img
+                    src={selected.image}
+                    className="w-full h-56 object-contain bg-black rounded"
+                  />
+                )}
+
+                <p><b>Nome:</b> {selected.name}</p>
+                <p><b>Vulgo:</b> {selected.vulgo}</p>
+                <p><b>Facção:</b> {selected.faccao}</p>
+                <p><b>CPF:</b> {selected.cpf}</p>
+                <p><b>Nascimento:</b> {selected.birth}</p>
+                <p><b>Mãe:</b> {selected.mother}</p>
+                <p><b>Endereço:</b> {selected.address}</p>
+                <p><b>Descrição:</b> {selected.description}</p>
+              </div>
+            </div>
+          )}
+        </div>
       );
-
-      return e("div", { className: "p-4 space-y-4" }, [
-
-        e("h1", { className: "text-3xl font-bold text-center", key: 1 }, "ZEBROL"),
-
-        showSearch && e("input", {
-          key: 2,
-          className: "w-full p-2 rounded bg-gray-800",
-          placeholder: "Buscar por nome, vulgo ou facção",
-          value: search,
-          onChange: ev => setSearch(ev.target.value)
-        }),
-
-        e("div", {
-          key: 3,
-          className: "grid grid-cols-2 gap-4 max-w-md mx-auto"
-        },
-          filtered.map(item =>
-            e("div", {
-              key: item.id,
-              className: "bg-gray-900 rounded-xl p-3 cursor-pointer",
-              onClick: () => setSelected(item)
-            }, [
-              e("div", {
-                className: "h-32 bg-gray-700 rounded overflow-hidden mb-2",
-                key: "img"
-              }, item.image && e("img", {
-                src: item.image,
-                className: "w-full h-full object-cover"
-              })),
-              e("p", { className: "text-center font-semibold" }, item.name)
-            ])
-          )
-        ),
-
-        selected && e("div", {
-          key: 4,
-          className: "fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50"
-        },
-          e("div", {
-            className: "bg-gray-900 p-4 rounded-xl max-w-sm w-full space-y-2 relative"
-          }, [
-            e("button", {
-              className: "absolute top-2 right-3 text-red-400",
-              onClick: () => setSelected(null)
-            }, "Fechar"),
-
-            selected.image && e("img", {
-              src: selected.image,
-              className: "w-full max-h-64 object-contain rounded"
-            }),
-
-            e("p", null, `Nome: ${selected.name}`),
-            e("p", null, `Vulgo: ${selected.vulgo || ""}`),
-            e("p", null, `Facção: ${selected.faccao || ""}`),
-            e("p", null, `CPF: ${selected.cpf || ""}`),
-            e("p", null, `Nascimento: ${selected.birth || ""}`),
-            e("p", null, `Mãe: ${selected.mother || ""}`),
-            e("p", null, `Endereço: ${selected.address || ""}`),
-            e("p", null, `Descrição: ${selected.description || ""}`)
-          ])
-        ),
-
-        e("button", {
-          key: 5,
-          className: "fixed bottom-6 left-6 text-3xl",
-          onClick: () => setShowSearch(!showSearch)
-        }, "🔍")
-      ]);
     }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(e(App));
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
   </script>
 </body>
 </html>
