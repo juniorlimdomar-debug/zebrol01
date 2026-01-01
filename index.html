@@ -119,8 +119,7 @@
                 <button onClick={() => setSelected(null)} className="absolute top-2 right-3 text-red-400">Fechar</button>
 
                 {selected.item.image && (
-                  <img src={selected.item.image} className="w-full h-48 object-cover rounded mb-2"/>
-                )}
+                 <img src={selected.item.image} className="w-full max-h-80 object-contain rounded mb-2 bg-black" />)}
 
                 <p><strong>Nome:</strong> {selected.item.name}</p>
                 <p><strong>Vulgo:</strong> {selected.item.vulgo}</p>
