@@ -5,18 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ZEBROL</title>
 
-  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- React -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 
-  <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body class="bg-black text-white">
 
+<body class="bg-black text-white">
   <div id="root"></div>
 
   <script type="text/babel">
@@ -57,17 +54,17 @@
         if (files && files[0]) {
           const reader = new FileReader();
           reader.onload = () => {
-            setForm((prev) => ({ ...prev, [name]: reader.result }));
+            setForm(prev => ({ ...prev, [name]: reader.result }));
           };
           reader.readAsDataURL(files[0]);
         } else {
-          setForm((prev) => ({ ...prev, [name]: value }));
+          setForm(prev => ({ ...prev, [name]: value }));
         }
       };
 
       const saveItem = () => {
         if (editIndex !== null) {
-          setItems(items.map((item, i) => (i === editIndex ? { ...form } : item)));
+          setItems(items.map((item, i) => i === editIndex ? { ...form } : item));
           setEditIndex(null);
         } else {
           setItems([...items, { ...form }]);
@@ -85,19 +82,13 @@
         });
       };
 
-      const confirmDeleteYes = () => {
-        setItems(items.filter((_, i) => i !== confirmDelete));
-        setConfirmDelete(null);
-        setSelected(null);
-      };
-
       const filteredItems = [...items]
-        .filter((item) => {
-          const term = searchTerm.toLowerCase();
+        .filter(item => {
+          const t = searchTerm.toLowerCase();
           return (
-            (item.name || "").toLowerCase().includes(term) ||
-            (item.vulgo || "").toLowerCase().includes(term) ||
-            (item.faction || "").toLowerCase().includes(term)
+            (item.name || "").toLowerCase().includes(t) ||
+            (item.vulgo || "").toLowerCase().includes(t) ||
+            (item.faction || "").toLowerCase().includes(t)
           );
         })
         .sort((a, b) =>
@@ -111,11 +102,10 @@
           {showSearch && (
             <div className="max-w-md mx-auto">
               <input
-                type="text"
-                placeholder="Pesquisar por nome, vulgo ou facção..."
+                className="w-full bg-gray-900 border border-gray-700 p-3 rounded-xl"
+                placeholder="Pesquisar por nome, vulgo ou facção"
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 p-3 rounded-xl text-white focus:outline-none"
+                onChange={e => setSearchTerm(e.target.value)}
               />
             </div>
           )}
@@ -125,13 +115,13 @@
               <div
                 key={index}
                 onClick={() => setSelected({ item, index })}
-                className="bg-gray-900 rounded-2xl p-4 shadow-lg cursor-pointer hover:bg-gray-800"
+                className="bg-gray-900 rounded-2xl p-4 cursor-pointer hover:bg-gray-800"
               >
-                <div className="w-full h-32 bg-gray-700 rounded mb-3 overflow-hidden">
+                <div className="h-32 bg-gray-700 rounded mb-3 overflow-hidden">
                   {item.image ? (
-                    <img src={item.image} className="w-full h-full object-cover"/>
+                    <img src={item.image} className="w-full h-full object-cover" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-400">
+                    <div className="h-full flex items-center justify-center text-gray-400">
                       Sem foto
                     </div>
                   )}
@@ -142,15 +132,12 @@
           </div>
 
           {selected && (
-            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-40">
-              <div className="relative bg-gray-900 p-6 rounded-2xl w-full max-w-sm space-y-2">
-                <button onClick={() => setSelected(null)} className="absolute top-2 right-3 text-red-400">Fechar</button>
+            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-40 p-4">
+              <div className="relative bg-gray-900 p-6 rounded-2xl max-w-sm w-full space-y-2">
+                <button className="absolute top-2 right-3 text-red-400" onClick={() => setSelected(null)}>Fechar</button>
 
                 {selected.item.image && (
-                  <img
-                    src={selected.item.image}
-                    className="w-full max-h-80 object-contain rounded mb-2 bg-black"
-                  />
+                  <img src={selected.item.image} className="w-full max-h-80 object-contain bg-black rounded" />
                 )}
 
                 <p><strong>Nome:</strong> {selected.item.name}</p>
@@ -162,80 +149,35 @@
                 <p><strong>Endereço:</strong> {selected.item.address}</p>
                 <p><strong>Descrição:</strong> {selected.item.description}</p>
 
-                <button
-                  className="absolute bottom-4 left-4 text-blue-500 text-2xl"
+                <button className="absolute bottom-4 left-4 text-blue-500 text-2xl"
                   onClick={() => {
                     setForm(selected.item);
                     setEditIndex(selected.index);
                     setShowForm(true);
-                  }}
-                >
-                  ✏️
-                </button>
+                  }}>✏️</button>
 
-                <button
-                  className="absolute bottom-4 right-4 text-red-500 text-2xl"
-                  onClick={() => setConfirmDelete(selected.index)}
-                >
-                  🗑️
-                </button>
+                <button className="absolute bottom-4 right-4 text-red-500 text-2xl"
+                  onClick={() => setConfirmDelete(selected.index)}>🗑️</button>
               </div>
             </div>
           )}
 
-          {confirmDelete !== null && (
-            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
-              <div className="bg-gray-900 p-6 rounded-xl text-center space-y-4">
-                <p className="font-semibold">Deseja excluir este registro?</p>
-                <div className="flex gap-4">
-                  <button onClick={confirmDeleteYes} className="bg-red-600 px-4 py-2 rounded">Sim</button>
-                  <button onClick={() => setConfirmDelete(null)} className="bg-gray-700 px-4 py-2 rounded">Não</button>
-                </div>
-              </div>
-            </div>
-          )}
+          <button onClick={() => setShowSearch(!showSearch)}
+            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl">🔍</button>
 
-          <!-- Botão lupa -->
-          <button
-            onClick={() => setShowSearch(!showSearch)}
-            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full flex items-center justify-center text-2xl shadow-2xl hover:bg-gray-700"
-            title="Pesquisar"
-          >
-            🔍
-          </button>
-
-          <!-- Botão adicionar -->
-          <button
-            onClick={() => setShowForm(true)}
-            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl font-bold"
-          >
-            +
-          </button>
+          <button onClick={() => setShowForm(true)}
+            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl">+</button>
 
           {showForm && (
             <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-40">
-              <div className="bg-gray-900 p-6 rounded-2xl w-full max-w-sm space-y-3">
-                <h2 className="text-xl font-semibold text-center">Cadastrar / Editar</h2>
-
-                <input type="file" name="image" onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" type="date" name="birth" value={form.birth} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da Mãe" value={form.mother} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange}/>
+              <div className="bg-gray-900 p-6 rounded-2xl max-w-sm w-full space-y-3">
+                <input type="file" name="image" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
                 <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange}></textarea>
-
-                <button
-                  onClick={() => {
-                    saveItem();
-                    setShowForm(false);
-                  }}
-                  className="w-full bg-blue-600 p-2 rounded font-semibold"
-                >
-                  Salvar
-                </button>
+                <button onClick={() => { saveItem(); setShowForm(false); }}
+                  className="w-full bg-blue-600 p-2 rounded">Salvar</button>
               </div>
             </div>
           )}
