@@ -5,9 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ZEBROL</title>
 
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 
@@ -19,10 +24,7 @@
     const PIN_CORRETO = "1234";
 
     function App() {
-      const [autenticado, setAutenticado] = useState(() => {
-        return localStorage.getItem("zebrol_auth") === "true";
-      });
-
+      const [auth, setAuth] = useState(() => localStorage.getItem("zebrol_auth") === "true");
       const [pin, setPin] = useState("");
 
       const [items, setItems] = useState(() => {
@@ -32,12 +34,14 @@
 
       const [selected, setSelected] = useState(null);
       const [showForm, setShowForm] = useState(false);
-      const [editIndex, setEditIndex] = useState(null);
+      const [editId, setEditId] = useState(null);
       const [confirmDelete, setConfirmDelete] = useState(null);
-      const [showSearch, setShowSearch] = useState(false);
-      const [searchTerm, setSearchTerm] = useState("");
 
-      const [form, setForm] = useState({
+      const [searchOpen, setSearchOpen] = useState(false);
+      const [search, setSearch] = useState("");
+
+      const emptyForm = {
+        id: null,
         image: "",
         name: "",
         vulgo: "",
@@ -46,52 +50,27 @@
         birth: "",
         mother: "",
         address: "",
-        description: "",
-      });
+        description: ""
+      };
+
+      const [form, setForm] = useState(emptyForm);
 
       useEffect(() => {
         localStorage.setItem("zebrol_items", JSON.stringify(items));
       }, [items]);
 
-      const tentarLogin = () => {
+      /* LOGIN */
+      const login = () => {
         if (pin === PIN_CORRETO) {
           localStorage.setItem("zebrol_auth", "true");
-          setAutenticado(true);
+          setAuth(true);
         } else {
           alert("Senha incorreta");
           setPin("");
         }
       };
 
-      if (!autenticado) {
-        return (
-          <div className="min-h-screen flex flex-col items-center justify-center space-y-6">
-            <h1 className="text-3xl font-bold">ZEBROL</h1>
-            <input
-              type="password"
-              value={pin}
-              readOnly
-              className="text-center text-2xl tracking-widest bg-gray-900 p-3 rounded w-40"
-            />
-            <div className="grid grid-cols-3 gap-4">
-              {[1,2,3,4,5,6,7,8,9,0].map(n => (
-                <button
-                  key={n}
-                  onClick={() => setPin(p => p.length < 6 ? p + n : p)}
-                  className="bg-gray-800 w-16 h-16 rounded text-xl"
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-            <div className="flex gap-4">
-              <button onClick={() => setPin("")} className="bg-gray-700 px-4 py-2 rounded">Limpar</button>
-              <button onClick={tentarLogin} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
-            </div>
-          </div>
-        );
-      }
-
+      /* INPUTS */
       const handleChange = (e) => {
         const { name, value, files } = e.target;
         if (files && files[0]) {
@@ -103,59 +82,191 @@
         }
       };
 
+      /* SALVAR */
       const saveItem = () => {
-        if (editIndex !== null) {
-          setItems(items.map((item, i) => i === editIndex ? { ...form } : item));
-          setEditIndex(null);
+        if (editId) {
+          setItems(prev =>
+            prev.map(item =>
+              item.id === editId ? { ...form, id: editId } : item
+            )
+          );
         } else {
-          setItems([...items, { ...form }]);
+          setItems(prev => [...prev, { ...form, id: crypto.randomUUID() }]);
         }
+        setForm(emptyForm);
+        setEditId(null);
         setShowForm(false);
       };
 
-      const filteredItems = [...items]
+      /* FILTRO + ORDENAÇÃO */
+      const filteredItems = items
         .filter(item => {
-          const t = searchTerm.toLowerCase();
+          const t = search.toLowerCase();
           return (
-            (item.name || "").toLowerCase().includes(t) ||
-            (item.vulgo || "").toLowerCase().includes(t) ||
-            (item.faction || "").toLowerCase().includes(t)
+            item.name.toLowerCase().includes(t) ||
+            item.vulgo.toLowerCase().includes(t) ||
+            item.faction.toLowerCase().includes(t)
           );
         })
         .sort((a, b) =>
-          (a.name || "").localeCompare(b.name || "", "pt-BR", { sensitivity: "base" })
+          a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" })
         );
 
+      /* LOGIN UI */
+      if (!auth) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center space-y-6">
+            <h1 className="text-3xl font-bold">ZEBROL</h1>
+
+            <input
+              type="password"
+              value={pin}
+              readOnly
+              className="bg-gray-900 p-3 rounded text-center text-2xl tracking-widest w-40"
+            />
+
+            <div className="grid grid-cols-3 gap-4">
+              {[1,2,3,4,5,6,7,8,9,0].map(n => (
+                <button
+                  key={n}
+                  onClick={() => pin.length < 6 && setPin(pin + n)}
+                  className="bg-gray-800 w-16 h-16 rounded text-xl"
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-4">
+              <button onClick={() => setPin("")} className="bg-gray-700 px-4 py-2 rounded">Limpar</button>
+              <button onClick={login} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
+            </div>
+          </div>
+        );
+      }
+
+      /* APP */
       return (
         <div className="min-h-screen p-6 space-y-6">
           <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
 
-          {showSearch && (
+          {searchOpen && (
             <input
               className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
-              placeholder="Pesquisar..."
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
+              placeholder="Pesquisar nome, vulgo ou facção"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
             />
           )}
 
           <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
-            {filteredItems.map((item, index) => (
-              <div key={index} onClick={() => setSelected({ item, index })}
-                className="bg-gray-900 p-4 rounded cursor-pointer">
+            {filteredItems.map(item => (
+              <div
+                key={item.id}
+                onClick={() => setSelected(item)}
+                className="bg-gray-900 p-4 rounded cursor-pointer hover:bg-gray-800"
+              >
                 <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
-                  {item.image ? <img src={item.image} className="w-full h-full object-cover" /> : null}
+                  {item.image && <img src={item.image} className="w-full h-full object-cover" />}
                 </div>
-                <p className="text-center">{item.name}</p>
+                <p className="text-center font-semibold">{item.name}</p>
               </div>
             ))}
           </div>
 
-          <button onClick={() => setShowSearch(!showSearch)}
-            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl">🔍</button>
+          {/* BOTÕES */}
+          <button
+            onClick={() => setSearchOpen(!searchOpen)}
+            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl"
+          >🔍</button>
 
-          <button onClick={() => setShowForm(true)}
-            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl">+</button>
+          <button
+            onClick={() => {
+              setForm(emptyForm);
+              setEditId(null);
+              setShowForm(true);
+            }}
+            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl"
+          >+</button>
+
+          {/* MODAL DETALHES */}
+          {selected && (
+            <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-40">
+              <div className="relative bg-gray-900 p-6 rounded-2xl w-full max-w-sm space-y-2">
+                <button onClick={() => setSelected(null)} className="text-red-400 text-sm absolute top-2 right-2">Fechar</button>
+
+                {selected.image && (
+                  <img src={selected.image} className="w-full h-auto max-h-72 object-contain rounded mb-2"/>
+                )}
+
+                <p><b>Nome:</b> {selected.name}</p>
+                <p><b>Vulgo:</b> {selected.vulgo}</p>
+                <p><b>Facção:</b> {selected.faction}</p>
+                <p><b>CPF:</b> {selected.cpf}</p>
+                <p><b>Nasc.:</b> {selected.birth}</p>
+                <p><b>Mãe:</b> {selected.mother}</p>
+                <p><b>Endereço:</b> {selected.address}</p>
+                <p><b>Descrição:</b> {selected.description}</p>
+
+                <button
+                  onClick={() => {
+                    setForm(selected);
+                    setEditId(selected.id);
+                    setShowForm(true);
+                  }}
+                  className="absolute bottom-4 left-4 text-blue-500 text-2xl"
+                >✏️</button>
+
+                <button
+                  onClick={() => setConfirmDelete(selected.id)}
+                  className="absolute bottom-4 right-4 text-red-500 text-2xl"
+                >🗑️</button>
+              </div>
+            </div>
+          )}
+
+          {/* CONFIRMAR EXCLUSÃO */}
+          {confirmDelete && (
+            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+              <div className="bg-gray-900 p-6 rounded space-y-4 text-center">
+                <p>Tem certeza que deseja excluir?</p>
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => {
+                      setItems(prev => prev.filter(i => i.id !== confirmDelete));
+                      setConfirmDelete(null);
+                      setSelected(null);
+                    }}
+                    className="bg-red-600 px-4 py-2 rounded"
+                  >Sim</button>
+                  <button
+                    onClick={() => setConfirmDelete(null)}
+                    className="bg-gray-700 px-4 py-2 rounded"
+                  >Não</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* FORM */}
+          {showForm && (
+            <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-40">
+              <div className="bg-gray-900 p-6 rounded w-full max-w-sm space-y-3">
+                <input type="file" name="image" accept="image/*" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange}/>
+                <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange}/>
+                <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange}/>
+                <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange}/>
+                <input className="w-full bg-gray-800 p-2 rounded" type="date" name="birth" value={form.birth} onChange={handleChange}/>
+                <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange}/>
+                <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange}/>
+                <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange}/>
+
+                <button onClick={saveItem} className="w-full bg-blue-600 p-2 rounded">Salvar</button>
+                <button onClick={() => setShowForm(false)} className="w-full bg-gray-700 p-2 rounded">Cancelar</button>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
