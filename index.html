@@ -6,10 +6,8 @@
   <title>ZEBROL</title>
 
   <script src="https://cdn.tailwindcss.com"></script>
-
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 
@@ -18,8 +16,15 @@
 
   <script type="text/babel">
     const { useState, useEffect } = React;
+    const PIN_CORRETO = "1234";
 
     function App() {
+      const [autenticado, setAutenticado] = useState(() => {
+        return localStorage.getItem("zebrol_auth") === "true";
+      });
+
+      const [pin, setPin] = useState("");
+
       const [items, setItems] = useState(() => {
         const saved = localStorage.getItem("zebrol_items");
         return saved ? JSON.parse(saved) : [];
@@ -29,7 +34,6 @@
       const [showForm, setShowForm] = useState(false);
       const [editIndex, setEditIndex] = useState(null);
       const [confirmDelete, setConfirmDelete] = useState(null);
-
       const [showSearch, setShowSearch] = useState(false);
       const [searchTerm, setSearchTerm] = useState("");
 
@@ -49,13 +53,50 @@
         localStorage.setItem("zebrol_items", JSON.stringify(items));
       }, [items]);
 
+      const tentarLogin = () => {
+        if (pin === PIN_CORRETO) {
+          localStorage.setItem("zebrol_auth", "true");
+          setAutenticado(true);
+        } else {
+          alert("Senha incorreta");
+          setPin("");
+        }
+      };
+
+      if (!autenticado) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center space-y-6">
+            <h1 className="text-3xl font-bold">ZEBROL</h1>
+            <input
+              type="password"
+              value={pin}
+              readOnly
+              className="text-center text-2xl tracking-widest bg-gray-900 p-3 rounded w-40"
+            />
+            <div className="grid grid-cols-3 gap-4">
+              {[1,2,3,4,5,6,7,8,9,0].map(n => (
+                <button
+                  key={n}
+                  onClick={() => setPin(p => p.length < 6 ? p + n : p)}
+                  className="bg-gray-800 w-16 h-16 rounded text-xl"
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-4">
+              <button onClick={() => setPin("")} className="bg-gray-700 px-4 py-2 rounded">Limpar</button>
+              <button onClick={tentarLogin} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
+            </div>
+          </div>
+        );
+      }
+
       const handleChange = (e) => {
         const { name, value, files } = e.target;
         if (files && files[0]) {
           const reader = new FileReader();
-          reader.onload = () => {
-            setForm(prev => ({ ...prev, [name]: reader.result }));
-          };
+          reader.onload = () => setForm(prev => ({ ...prev, [name]: reader.result }));
           reader.readAsDataURL(files[0]);
         } else {
           setForm(prev => ({ ...prev, [name]: value }));
@@ -69,17 +110,7 @@
         } else {
           setItems([...items, { ...form }]);
         }
-        setForm({
-          image: "",
-          name: "",
-          vulgo: "",
-          faction: "",
-          cpf: "",
-          birth: "",
-          mother: "",
-          address: "",
-          description: "",
-        });
+        setShowForm(false);
       };
 
       const filteredItems = [...items]
@@ -100,87 +131,31 @@
           <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
 
           {showSearch && (
-            <div className="max-w-md mx-auto">
-              <input
-                className="w-full bg-gray-900 border border-gray-700 p-3 rounded-xl"
-                placeholder="Pesquisar por nome, vulgo ou facção"
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-              />
-            </div>
+            <input
+              className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+              placeholder="Pesquisar..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+            />
           )}
 
           <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
             {filteredItems.map((item, index) => (
-              <div
-                key={index}
-                onClick={() => setSelected({ item, index })}
-                className="bg-gray-900 rounded-2xl p-4 cursor-pointer hover:bg-gray-800"
-              >
-                <div className="h-32 bg-gray-700 rounded mb-3 overflow-hidden">
-                  {item.image ? (
-                    <img src={item.image} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-gray-400">
-                      Sem foto
-                    </div>
-                  )}
+              <div key={index} onClick={() => setSelected({ item, index })}
+                className="bg-gray-900 p-4 rounded cursor-pointer">
+                <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
+                  {item.image ? <img src={item.image} className="w-full h-full object-cover" /> : null}
                 </div>
-                <p className="text-center font-semibold">{item.name || "Sem nome"}</p>
+                <p className="text-center">{item.name}</p>
               </div>
             ))}
           </div>
-
-          {selected && (
-            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-40 p-4">
-              <div className="relative bg-gray-900 p-6 rounded-2xl max-w-sm w-full space-y-2">
-                <button className="absolute top-2 right-3 text-red-400" onClick={() => setSelected(null)}>Fechar</button>
-
-                {selected.item.image && (
-                  <img src={selected.item.image} className="w-full max-h-80 object-contain bg-black rounded" />
-                )}
-
-                <p><strong>Nome:</strong> {selected.item.name}</p>
-                <p><strong>Vulgo:</strong> {selected.item.vulgo}</p>
-                <p><strong>Facção:</strong> {selected.item.faction}</p>
-                <p><strong>CPF:</strong> {selected.item.cpf}</p>
-                <p><strong>Nascimento:</strong> {selected.item.birth}</p>
-                <p><strong>Mãe:</strong> {selected.item.mother}</p>
-                <p><strong>Endereço:</strong> {selected.item.address}</p>
-                <p><strong>Descrição:</strong> {selected.item.description}</p>
-
-                <button className="absolute bottom-4 left-4 text-blue-500 text-2xl"
-                  onClick={() => {
-                    setForm(selected.item);
-                    setEditIndex(selected.index);
-                    setShowForm(true);
-                  }}>✏️</button>
-
-                <button className="absolute bottom-4 right-4 text-red-500 text-2xl"
-                  onClick={() => setConfirmDelete(selected.index)}>🗑️</button>
-              </div>
-            </div>
-          )}
 
           <button onClick={() => setShowSearch(!showSearch)}
             className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl">🔍</button>
 
           <button onClick={() => setShowForm(true)}
             className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl">+</button>
-
-          {showForm && (
-            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-40">
-              <div className="bg-gray-900 p-6 rounded-2xl max-w-sm w-full space-y-3">
-                <input type="file" name="image" onChange={handleChange} />
-                <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange} />
-                <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange} />
-                <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
-                <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange}></textarea>
-                <button onClick={() => { saveItem(); setShowForm(false); }}
-                  className="w-full bg-blue-600 p-2 rounded">Salvar</button>
-              </div>
-            </div>
-          )}
         </div>
       );
     }
