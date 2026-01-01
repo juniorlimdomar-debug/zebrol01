@@ -14,6 +14,11 @@
 
   <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase CDN (v9 compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 </head>
 
 <body class="bg-black text-white">
@@ -21,27 +26,31 @@
 
   <script type="text/babel">
     const { useState, useEffect } = React;
-    const PIN_CORRETO = "1234";
+
+    /* FIREBASE CONFIG */
+    const firebaseConfig = {
+      apiKey: "AIzaSyBAH2rBIR5ibvde0VMVF38QyM4L2s8IqIQ",
+      authDomain: "zebrol.firebaseapp.com",
+      projectId: "zebrol",
+      appId: "1:846397475446:web:1b38ce35dcae4e1754ed57"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
 
     function App() {
-      const [auth, setAuth] = useState(() => localStorage.getItem("zebrol_auth") === "true");
-      const [pin, setPin] = useState("");
+      const [user, setUser] = useState(null);
+      const [email, setEmail] = useState("");
+      const [password, setPassword] = useState("");
 
-      const [items, setItems] = useState(() => {
-        const saved = localStorage.getItem("zebrol_items");
-        return saved ? JSON.parse(saved) : [];
-      });
-
+      const [items, setItems] = useState([]);
       const [selected, setSelected] = useState(null);
       const [showForm, setShowForm] = useState(false);
       const [editId, setEditId] = useState(null);
-      const [confirmDelete, setConfirmDelete] = useState(null);
-
-      const [searchOpen, setSearchOpen] = useState(false);
       const [search, setSearch] = useState("");
 
       const emptyForm = {
-        id: null,
         image: "",
         name: "",
         vulgo: "",
@@ -55,22 +64,37 @@
 
       const [form, setForm] = useState(emptyForm);
 
+      /* AUTH STATE */
       useEffect(() => {
-        localStorage.setItem("zebrol_items", JSON.stringify(items));
-      }, [items]);
+        return auth.onAuthStateChanged(u => setUser(u));
+      }, []);
+
+      /* LOAD DATA */
+      useEffect(() => {
+        if (!user) return;
+
+        return db
+          .collection("users")
+          .doc(user.uid)
+          .collection("items")
+          .onSnapshot(snapshot => {
+            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setItems(data);
+          });
+      }, [user]);
 
       /* LOGIN */
-      const login = () => {
-        if (pin === PIN_CORRETO) {
-          localStorage.setItem("zebrol_auth", "true");
-          setAuth(true);
-        } else {
-          alert("Senha incorreta");
-          setPin("");
+      const login = async () => {
+        try {
+          await auth.signInWithEmailAndPassword(email, password);
+        } catch (e) {
+          alert("Erro ao entrar");
         }
       };
 
-      /* INPUTS */
+      const logout = () => auth.signOut();
+
+      /* FORM */
       const handleChange = (e) => {
         const { name, value, files } = e.target;
         if (files && files[0]) {
@@ -82,188 +106,90 @@
         }
       };
 
-      /* SALVAR */
-      const saveItem = () => {
+      const saveItem = async () => {
         if (editId) {
-          setItems(prev =>
-            prev.map(item =>
-              item.id === editId ? { ...form, id: editId } : item
-            )
-          );
+          await db.collection("users").doc(user.uid).collection("items").doc(editId).set(form);
         } else {
-          setItems(prev => [...prev, { ...form, id: crypto.randomUUID() }]);
+          await db.collection("users").doc(user.uid).collection("items").add(form);
         }
         setForm(emptyForm);
         setEditId(null);
         setShowForm(false);
       };
 
-      /* FILTRO + ORDENAÇÃO */
-      const filteredItems = items
-        .filter(item => {
-          const t = search.toLowerCase();
-          return (
-            item.name.toLowerCase().includes(t) ||
-            item.vulgo.toLowerCase().includes(t) ||
-            item.faction.toLowerCase().includes(t)
-          );
-        })
-        .sort((a, b) =>
-          a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" })
-        );
+      const deleteItem = async (id) => {
+        await db.collection("users").doc(user.uid).collection("items").doc(id).delete();
+        setSelected(null);
+      };
 
       /* LOGIN UI */
-      if (!auth) {
+      if (!user) {
         return (
-          <div className="min-h-screen flex flex-col items-center justify-center space-y-6">
+          <div className="min-h-screen flex flex-col items-center justify-center gap-4">
             <h1 className="text-3xl font-bold">ZEBROL</h1>
-
-            <input
-              type="password"
-              value={pin}
-              readOnly
-              className="bg-gray-900 p-3 rounded text-center text-2xl tracking-widest w-40"
-            />
-
-            <div className="grid grid-cols-3 gap-4">
-              {[1,2,3,4,5,6,7,8,9,0].map(n => (
-                <button
-                  key={n}
-                  onClick={() => pin.length < 6 && setPin(pin + n)}
-                  className="bg-gray-800 w-16 h-16 rounded text-xl"
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex gap-4">
-              <button onClick={() => setPin("")} className="bg-gray-700 px-4 py-2 rounded">Limpar</button>
-              <button onClick={login} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
-            </div>
+            <input className="bg-gray-800 p-2 rounded w-64" placeholder="Email" onChange={e => setEmail(e.target.value)} />
+            <input type="password" className="bg-gray-800 p-2 rounded w-64" placeholder="Senha" onChange={e => setPassword(e.target.value)} />
+            <button onClick={login} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
           </div>
         );
       }
 
-      /* APP */
+      const filtered = items
+        .filter(i =>
+          i.name.toLowerCase().includes(search.toLowerCase()) ||
+          i.vulgo.toLowerCase().includes(search.toLowerCase()) ||
+          i.faction.toLowerCase().includes(search.toLowerCase())
+        )
+        .sort((a,b)=>a.name.localeCompare(b.name,"pt-BR",{sensitivity:"base"}));
+
       return (
-        <div className="min-h-screen p-6 space-y-6">
+        <div className="p-6 space-y-6">
           <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
 
-          {searchOpen && (
-            <input
-              className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
-              placeholder="Pesquisar nome, vulgo ou facção"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-          )}
+          <input className="w-full max-w-md mx-auto block bg-gray-900 p-2 rounded"
+            placeholder="Pesquisar"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
 
           <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
-            {filteredItems.map(item => (
-              <div
-                key={item.id}
-                onClick={() => setSelected(item)}
-                className="bg-gray-900 p-4 rounded cursor-pointer hover:bg-gray-800"
-              >
+            {filtered.map(item => (
+              <div key={item.id} onClick={()=>setSelected(item)} className="bg-gray-900 p-4 rounded cursor-pointer">
                 <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
-                  {item.image && <img src={item.image} className="w-full h-full object-cover" />}
+                  {item.image && <img src={item.image} className="w-full h-full object-cover"/>}
                 </div>
-                <p className="text-center font-semibold">{item.name}</p>
+                <p className="text-center">{item.name}</p>
               </div>
             ))}
           </div>
 
-          {/* BOTÕES */}
-          <button
-            onClick={() => setSearchOpen(!searchOpen)}
-            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl"
-          >🔍</button>
+          <button onClick={()=>setShowForm(true)} className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl">+</button>
+          <button onClick={logout} className="fixed top-4 right-4 text-sm text-red-400">Sair</button>
 
-          <button
-            onClick={() => {
-              setForm(emptyForm);
-              setEditId(null);
-              setShowForm(true);
-            }}
-            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl"
-          >+</button>
+          {showForm && (
+            <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
+              <div className="bg-gray-900 p-4 rounded space-y-2 w-full max-w-sm">
+                <input type="file" name="image" onChange={handleChange}/>
+                {["name","vulgo","faction","cpf","birth","mother","address"].map(f=>(
+                  <input key={f} name={f} value={form[f]} onChange={handleChange}
+                    placeholder={f} className="w-full bg-gray-800 p-2 rounded"/>
+                ))}
+                <textarea name="description" value={form.description} onChange={handleChange}
+                  className="w-full bg-gray-800 p-2 rounded"/>
+                <button onClick={saveItem} className="bg-blue-600 w-full p-2 rounded">Salvar</button>
+              </div>
+            </div>
+          )}
 
-          {/* MODAL DETALHES */}
           {selected && (
-            <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-40">
-              <div className="relative bg-gray-900 p-6 rounded-2xl w-full max-w-sm space-y-2">
-                <button onClick={() => setSelected(null)} className="text-red-400 text-sm absolute top-2 right-2">Fechar</button>
-
-                {selected.image && (
-                  <img src={selected.image} className="w-full h-auto max-h-72 object-contain rounded mb-2"/>
-                )}
-
+            <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
+              <div className="bg-gray-900 p-4 rounded w-full max-w-sm space-y-2">
+                {selected.image && <img src={selected.image} className="w-full object-contain"/>}
                 <p><b>Nome:</b> {selected.name}</p>
                 <p><b>Vulgo:</b> {selected.vulgo}</p>
                 <p><b>Facção:</b> {selected.faction}</p>
-                <p><b>CPF:</b> {selected.cpf}</p>
-                <p><b>Nasc.:</b> {selected.birth}</p>
-                <p><b>Mãe:</b> {selected.mother}</p>
-                <p><b>Endereço:</b> {selected.address}</p>
-                <p><b>Descrição:</b> {selected.description}</p>
-
-                <button
-                  onClick={() => {
-                    setForm(selected);
-                    setEditId(selected.id);
-                    setShowForm(true);
-                  }}
-                  className="absolute bottom-4 left-4 text-blue-500 text-2xl"
-                >✏️</button>
-
-                <button
-                  onClick={() => setConfirmDelete(selected.id)}
-                  className="absolute bottom-4 right-4 text-red-500 text-2xl"
-                >🗑️</button>
-              </div>
-            </div>
-          )}
-
-          {/* CONFIRMAR EXCLUSÃO */}
-          {confirmDelete && (
-            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
-              <div className="bg-gray-900 p-6 rounded space-y-4 text-center">
-                <p>Tem certeza que deseja excluir?</p>
-                <div className="flex gap-4">
-                  <button
-                    onClick={() => {
-                      setItems(prev => prev.filter(i => i.id !== confirmDelete));
-                      setConfirmDelete(null);
-                      setSelected(null);
-                    }}
-                    className="bg-red-600 px-4 py-2 rounded"
-                  >Sim</button>
-                  <button
-                    onClick={() => setConfirmDelete(null)}
-                    className="bg-gray-700 px-4 py-2 rounded"
-                  >Não</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* FORM */}
-          {showForm && (
-            <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-40">
-              <div className="bg-gray-900 p-6 rounded w-full max-w-sm space-y-3">
-                <input type="file" name="image" accept="image/*" onChange={handleChange} />
-                <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" type="date" name="birth" value={form.birth} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange}/>
-                <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange}/>
-                <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange}/>
-
-                <button onClick={saveItem} className="w-full bg-blue-600 p-2 rounded">Salvar</button>
-                <button onClick={() => setShowForm(false)} className="w-full bg-gray-700 p-2 rounded">Cancelar</button>
+                <button onClick={()=>deleteItem(selected.id)} className="text-red-500">Excluir</button>
+                <button onClick={()=>setSelected(null)} className="text-gray-400">Fechar</button>
               </div>
             </div>
           )}
