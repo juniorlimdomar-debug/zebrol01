@@ -15,7 +15,7 @@
   <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Firebase CDN (v9 compat) -->
+  <!-- Firebase CDN -->
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
@@ -45,10 +45,11 @@
       const [password, setPassword] = useState("");
 
       const [items, setItems] = useState([]);
-      const [selected, setSelected] = useState(null);
-      const [showForm, setShowForm] = useState(false);
-      const [editId, setEditId] = useState(null);
+
+      const [searchOpen, setSearchOpen] = useState(false);
       const [search, setSearch] = useState("");
+
+      const [showForm, setShowForm] = useState(false);
 
       const emptyForm = {
         image: "",
@@ -64,7 +65,7 @@
 
       const [form, setForm] = useState(emptyForm);
 
-      /* AUTH STATE */
+      /* AUTH */
       useEffect(() => {
         return auth.onAuthStateChanged(u => setUser(u));
       }, []);
@@ -78,7 +79,10 @@
           .doc(user.uid)
           .collection("items")
           .onSnapshot(snapshot => {
-            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const data = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
             setItems(data);
           });
       }, [user]);
@@ -87,7 +91,7 @@
       const login = async () => {
         try {
           await auth.signInWithEmailAndPassword(email, password);
-        } catch (e) {
+        } catch {
           alert("Erro ao entrar");
         }
       };
@@ -99,7 +103,8 @@
         const { name, value, files } = e.target;
         if (files && files[0]) {
           const reader = new FileReader();
-          reader.onload = () => setForm(prev => ({ ...prev, [name]: reader.result }));
+          reader.onload = () =>
+            setForm(prev => ({ ...prev, [name]: reader.result }));
           reader.readAsDataURL(files[0]);
         } else {
           setForm(prev => ({ ...prev, [name]: value }));
@@ -107,89 +112,144 @@
       };
 
       const saveItem = async () => {
-        if (editId) {
-          await db.collection("users").doc(user.uid).collection("items").doc(editId).set(form);
-        } else {
-          await db.collection("users").doc(user.uid).collection("items").add(form);
-        }
+        await db
+          .collection("users")
+          .doc(user.uid)
+          .collection("items")
+          .add(form);
+
         setForm(emptyForm);
-        setEditId(null);
         setShowForm(false);
       };
 
-      const deleteItem = async (id) => {
-        await db.collection("users").doc(user.uid).collection("items").doc(id).delete();
-        setSelected(null);
-      };
+      /* SEARCH + ORDER */
+      const filteredItems = items
+        .filter(item => {
+          const t = search.toLowerCase();
+          return (
+            item.name?.toLowerCase().includes(t) ||
+            item.vulgo?.toLowerCase().includes(t) ||
+            item.faction?.toLowerCase().includes(t)
+          );
+        })
+        .sort((a, b) =>
+          a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" })
+        );
 
-      /* LOGIN UI */
+      /* LOGIN SCREEN */
       if (!user) {
         return (
           <div className="min-h-screen flex flex-col items-center justify-center gap-4">
             <h1 className="text-3xl font-bold">ZEBROL</h1>
-            <input className="bg-gray-800 p-2 rounded w-64" placeholder="Email" onChange={e => setEmail(e.target.value)} />
-            <input type="password" className="bg-gray-800 p-2 rounded w-64" placeholder="Senha" onChange={e => setPassword(e.target.value)} />
-            <button onClick={login} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
+
+            <input
+              className="bg-gray-800 p-2 rounded w-64"
+              placeholder="Email"
+              onChange={e => setEmail(e.target.value)}
+            />
+
+            <input
+              type="password"
+              className="bg-gray-800 p-2 rounded w-64"
+              placeholder="Senha"
+              onChange={e => setPassword(e.target.value)}
+            />
+
+            <button
+              onClick={login}
+              className="bg-blue-600 px-4 py-2 rounded"
+            >
+              Entrar
+            </button>
           </div>
         );
       }
 
-      const filtered = items
-        .filter(i =>
-          i.name.toLowerCase().includes(search.toLowerCase()) ||
-          i.vulgo.toLowerCase().includes(search.toLowerCase()) ||
-          i.faction.toLowerCase().includes(search.toLowerCase())
-        )
-        .sort((a,b)=>a.name.localeCompare(b.name,"pt-BR",{sensitivity:"base"}));
-
+      /* APP */
       return (
-        <div className="p-6 space-y-6">
+        <div className="min-h-screen p-6 space-y-6">
           <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
 
-          <input className="w-full max-w-md mx-auto block bg-gray-900 p-2 rounded"
-            placeholder="Pesquisar"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
+          {searchOpen && (
+            <input
+              className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+              placeholder="Pesquisar nome, vulgo ou facção"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+          )}
 
           <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
-            {filtered.map(item => (
-              <div key={item.id} onClick={()=>setSelected(item)} className="bg-gray-900 p-4 rounded cursor-pointer">
+            {filteredItems.map(item => (
+              <div
+                key={item.id}
+                className="bg-gray-900 p-4 rounded"
+              >
                 <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
-                  {item.image && <img src={item.image} className="w-full h-full object-cover"/>}
+                  {item.image && (
+                    <img
+                      src={item.image}
+                      className="w-full h-full object-cover"
+                    />
+                  )}
                 </div>
-                <p className="text-center">{item.name}</p>
+                <p className="text-center font-semibold">{item.name}</p>
+                <p className="text-center text-sm text-gray-400">
+                  {item.vulgo}
+                </p>
               </div>
             ))}
           </div>
 
-          <button onClick={()=>setShowForm(true)} className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl">+</button>
-          <button onClick={logout} className="fixed top-4 right-4 text-sm text-red-400">Sair</button>
+          {/* BOTÕES */}
+          <button
+            onClick={() => setSearchOpen(!searchOpen)}
+            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full flex items-center justify-center text-2xl shadow-xl"
+          >
+            🔍
+          </button>
 
+          <button
+            onClick={() => setShowForm(true)}
+            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full flex items-center justify-center text-3xl shadow-xl"
+          >
+            +
+          </button>
+
+          <button
+            onClick={logout}
+            className="fixed top-4 right-4 text-red-400 text-sm"
+          >
+            Sair
+          </button>
+
+          {/* FORM */}
           {showForm && (
             <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
-              <div className="bg-gray-900 p-4 rounded space-y-2 w-full max-w-sm">
-                <input type="file" name="image" onChange={handleChange}/>
-                {["name","vulgo","faction","cpf","birth","mother","address"].map(f=>(
-                  <input key={f} name={f} value={form[f]} onChange={handleChange}
-                    placeholder={f} className="w-full bg-gray-800 p-2 rounded"/>
-                ))}
-                <textarea name="description" value={form.description} onChange={handleChange}
-                  className="w-full bg-gray-800 p-2 rounded"/>
-                <button onClick={saveItem} className="bg-blue-600 w-full p-2 rounded">Salvar</button>
-              </div>
-            </div>
-          )}
-
-          {selected && (
-            <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
               <div className="bg-gray-900 p-4 rounded w-full max-w-sm space-y-2">
-                {selected.image && <img src={selected.image} className="w-full object-contain"/>}
-                <p><b>Nome:</b> {selected.name}</p>
-                <p><b>Vulgo:</b> {selected.vulgo}</p>
-                <p><b>Facção:</b> {selected.faction}</p>
-                <button onClick={()=>deleteItem(selected.id)} className="text-red-500">Excluir</button>
-                <button onClick={()=>setSelected(null)} className="text-gray-400">Fechar</button>
+                <input type="file" name="image" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" type="date" name="birth" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" onChange={handleChange} />
+                <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" onChange={handleChange} />
+                <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" onChange={handleChange} />
+
+                <button
+                  onClick={saveItem}
+                  className="w-full bg-blue-600 p-2 rounded"
+                >
+                  Salvar
+                </button>
+
+                <button
+                  onClick={() => setShowForm(false)}
+                  className="w-full bg-gray-700 p-2 rounded"
+                >
+                  Cancelar
+                </button>
               </div>
             </div>
           )}
