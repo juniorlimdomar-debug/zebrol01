@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "https://esm.sh/react@18";
+const { useState, useEffect } = React;
 
-export default function App() {
+function App() {
   const [items, setItems] = useState(() => {
     const saved = localStorage.getItem("zebrol_items");
     return saved ? JSON.parse(saved) : [];
@@ -83,9 +83,7 @@ export default function App() {
       {selected && (
         <div className="modal">
           <div className="modal-box">
-            <button className="close" onClick={() => setSelected(null)}>
-              ✕
-            </button>
+            <button className="close" onClick={() => setSelected(null)}>✕</button>
 
             {selected.item.image && (
               <img src={selected.item.image} className="bigimg" />
@@ -105,16 +103,12 @@ export default function App() {
                 setEditIndex(selected.index);
                 setShowForm(true);
               }}
-            >
-              ✏️
-            </button>
+            >✏️</button>
 
             <button
               className="delete"
               onClick={() => setConfirmDelete(selected.index)}
-            >
-              🗑️
-            </button>
+            >🗑️</button>
           </div>
         </div>
       )}
@@ -132,17 +126,13 @@ export default function App() {
                 setConfirmDelete(null);
                 setSelected(null);
               }}
-            >
-              Sim
-            </button>
+            >Sim</button>
             <button onClick={() => setConfirmDelete(null)}>Não</button>
           </div>
         </div>
       )}
 
-      <button className="fab" onClick={() => setShowForm(true)}>
-        +
-      </button>
+      <button className="fab" onClick={() => setShowForm(true)}>+</button>
 
       {showForm && (
         <div className="modal">
@@ -161,3 +151,5 @@ export default function App() {
     </div>
   );
 }
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
