@@ -43,7 +43,9 @@ function App() {
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
+
   const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState(null);
 
   const emptyForm = {
     image: "", name: "", vulgo: "", faction: "",
@@ -82,8 +84,14 @@ function App() {
   };
 
   const saveItem = async () => {
-    await db.collection("users").doc(user.uid).collection("items").add(form);
+    const ref = db.collection("users").doc(user.uid).collection("items");
+    if (editId) {
+      await ref.doc(editId).update(form);
+    } else {
+      await ref.add(form);
+    }
     setForm(emptyForm);
+    setEditId(null);
     setShowForm(false);
   };
 
@@ -128,11 +136,13 @@ function App() {
 
       {selectedItem && (
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-50">
-          <div className="bg-gray-900 p-6 rounded w-full max-w-sm space-y-2">
+          <div className="relative bg-gray-900 p-6 rounded w-full max-w-sm space-y-2">
             <button onClick={() => setSelectedItem(null)} className="text-red-400 text-sm">Fechar</button>
+
             {selectedItem.image && (
               <img src={selectedItem.image} className="w-full h-56 object-contain bg-black rounded" />
             )}
+
             <p><b>Nome:</b> {selectedItem.name}</p>
             <p><b>Vulgo:</b> {selectedItem.vulgo}</p>
             <p><b>Facção:</b> {selectedItem.faction}</p>
@@ -141,6 +151,18 @@ function App() {
             <p><b>Mãe:</b> {selectedItem.mother}</p>
             <p><b>Endereço:</b> {selectedItem.address}</p>
             <p><b>Descrição:</b> {selectedItem.description}</p>
+
+            <button
+              onClick={() => {
+                setForm(selectedItem);
+                setEditId(selectedItem.id);
+                setSelectedItem(null);
+                setShowForm(true);
+              }}
+              className="absolute bottom-4 left-4 text-blue-400 text-2xl"
+            >
+              ✏️
+            </button>
           </div>
         </div>
       )}
@@ -150,6 +172,31 @@ function App() {
 
       <button onClick={() => setShowForm(true)}
         className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full flex items-center justify-center text-3xl">+</button>
+
+      {showForm && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
+          <div className="bg-gray-900 p-4 rounded w-full max-w-sm space-y-2">
+            <input type="file" name="image" onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" type="date" name="birth" value={form.birth} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
+            <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
+
+            <button onClick={saveItem} className="w-full bg-blue-600 p-2 rounded">
+              Salvar
+            </button>
+
+            <button onClick={() => { setShowForm(false); setEditId(null); }}
+              className="w-full bg-gray-700 p-2 rounded">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
