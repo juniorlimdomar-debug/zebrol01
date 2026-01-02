@@ -42,7 +42,7 @@ function App() {
   const [editingId, setEditingId] = useState(null);
 
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null); // ← ADICIONADO
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -103,11 +103,11 @@ function App() {
       .collection("users")
       .doc(user.uid)
       .collection("items")
-      .doc(confirmDeleteId)
+      .doc(confirmDeleteId) // ← AJUSTADO
       .delete();
 
     setConfirmDelete(false);
-    setConfirmDeleteId(null);
+    setConfirmDeleteId(null); // ← LIMPA
     setSelected(null);
   };
 
@@ -134,6 +134,15 @@ function App() {
   return (
     <div className="min-h-screen p-6 space-y-6">
       <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
+
+      {searchOpen && (
+        <input
+          className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+          placeholder="Pesquisar nome, vulgo ou facção"
+          value={search}
+          onChange={e=>setSearch(e.target.value)}
+        />
+      )}
 
       <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
         {filtered.map(item=>(
@@ -162,8 +171,19 @@ function App() {
               Fechar
             </button>
 
+            {selected.image && (
+              <img src={selected.image} className="w-full object-contain rounded mb-3" />
+            )}
+
             <p><b>Nome:</b> {selected.name}</p>
             <p><b>Vulgo:</b> {selected.vulgo}</p>
+            <p><b>Facção:</b> {selected.faction}</p>
+            <p><b>CPF:</b> {selected.cpf}</p>
+            <p><b>Nasc:</b> {selected.birth}</p>
+            <p><b>Mãe:</b> {selected.mother}</p>
+            <p><b>Infopem:</b> {selected.infopem}</p>
+            <p><b>Endereço:</b> {selected.address}</p>
+            <p><b>Descrição:</b> {selected.description}</p>
 
             <button
               onClick={() => {
@@ -179,7 +199,7 @@ function App() {
 
             <button
               onClick={() => {
-                setConfirmDeleteId(selected.id);
+                setConfirmDeleteId(selected.id); // ← AJUSTADO
                 setConfirmDelete(true);
               }}
               className="fixed bottom-6 right-6 text-red-500 text-2xl z-50"
@@ -193,11 +213,66 @@ function App() {
       {confirmDelete && (
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
           <div className="bg-gray-900 p-6 rounded-2xl w-80 space-y-4 text-center">
-            <p className="text-lg font-semibold">Tem certeza que deseja excluir?</p>
+            <p className="text-lg font-semibold">
+              Tem certeza que deseja excluir?
+            </p>
             <div className="flex gap-4">
-              <button onClick={deleteItem} className="flex-1 bg-red-600 p-2 rounded-xl">Sim</button>
-              <button onClick={()=>{ setConfirmDelete(false); setConfirmDeleteId(null); }} className="flex-1 bg-gray-700 p-2 rounded-xl">Não</button>
+              <button
+                onClick={deleteItem}
+                className="flex-1 bg-red-600 p-2 rounded-xl"
+              >
+                Sim
+              </button>
+              <button
+                onClick={() => {
+                  setConfirmDelete(false);
+                  setConfirmDeleteId(null);
+                }}
+                className="flex-1 bg-gray-700 p-2 rounded-xl"
+              >
+                Não
+              </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {!selected && !showForm && (
+        <>
+          <button
+            onClick={()=>setSearchOpen(!searchOpen)}
+            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl"
+          >🔍</button>
+
+          <button
+            onClick={()=>{
+              setForm(emptyForm);
+              setEditingId(null);
+              setShowForm(true);
+            }}
+            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl"
+          >+</button>
+        </>
+      )}
+
+      {showForm && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-900 p-4 rounded w-full max-w-sm space-y-2">
+            <input type="file" name="image" onChange={handleChange} />
+
+            <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange} />
+
+            <input className="w-full bg-gray-800 p-2 rounded" name="birth" placeholder="Data de nascimento" value={form.birth} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="infopem" placeholder="Infopem" value={form.infopem} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
+            <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
+
+            <button onClick={saveItem} className="w-full bg-blue-600 p-2 rounded">Salvar</button>
+            <button onClick={()=>{ setShowForm(false); setEditingId(null); }} className="w-full bg-gray-700 p-2 rounded">Cancelar</button>
           </div>
         </div>
       )}
