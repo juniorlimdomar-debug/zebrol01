@@ -40,21 +40,23 @@ function App() {
   const [selected, setSelected] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
+
   const [confirmDelete, setConfirmDelete] = useState(false);
+
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
 
   const emptyForm = {
-    image:"",
-    name:"",
-    vulgo:"",
-    faction:"",
-    cpf:"",
-    birth:"",
-    mother:"",
-    infopem:"",
-    address:"",
-    description:""
+    image: "",
+    name: "",
+    vulgo: "",
+    faction: "",
+    cpf: "",
+    birth: "",
+    mother: "",
+    infopem: "",
+    address: "",
+    description: ""
   };
 
   const [form, setForm] = useState(emptyForm);
@@ -63,11 +65,12 @@ function App() {
 
   useEffect(() => {
     if (!user) return;
-    return db.collection("users")
+    return db
+      .collection("users")
       .doc(user.uid)
       .collection("items")
       .onSnapshot(snap => {
-        setItems(snap.docs.map(d => ({ id:d.id, ...d.data() })));
+        setItems(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       });
   }, [user]);
 
@@ -84,25 +87,30 @@ function App() {
 
   const saveItem = async () => {
     const ref = db.collection("users").doc(user.uid).collection("items");
-    editingId ? await ref.doc(editingId).update(form) : await ref.add(form);
+    editingId
+      ? await ref.doc(editingId).update(form)
+      : await ref.add(form);
+
     setForm(emptyForm);
     setEditingId(null);
     setShowForm(false);
   };
 
   const deleteItem = async () => {
-    await db.collection("users")
+    await db
+      .collection("users")
       .doc(user.uid)
       .collection("items")
       .doc(selected.id)
       .delete();
+
     setConfirmDelete(false);
     setSelected(null);
   };
 
   const filtered = items
     .filter(i =>
-      [i.name,i.vulgo,i.faction]
+      [i.name, i.vulgo, i.faction]
         .some(v => v?.toLowerCase().includes(search.toLowerCase()))
     )
     .sort((a,b)=>a.name.localeCompare(b.name,"pt-BR",{sensitivity:"base"}));
@@ -124,6 +132,49 @@ function App() {
     <div className="min-h-screen p-6 space-y-6">
       <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
 
+      {searchOpen && (
+        <input
+          className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+          placeholder="Pesquisar nome, vulgo ou facção"
+          value={search}
+          onChange={e=>setSearch(e.target.value)}
+        />
+      )}
+
+      <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+        {filtered.map(item=>(
+          <div
+            key={item.id}
+            onClick={()=>setSelected(item)}
+            className="bg-gray-900 p-4 rounded cursor-pointer"
+          >
+            <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
+              {item.image && <img src={item.image} className="w-full h-full object-cover" />}
+            </div>
+            <p className="text-center font-semibold">{item.name}</p>
+            <p className="text-center text-sm text-gray-400">{item.vulgo}</p>
+          </div>
+        ))}
+      </div>
+
+      {!selected && !showForm && (
+        <>
+          <button
+            onClick={()=>setSearchOpen(!searchOpen)}
+            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl"
+          >🔍</button>
+
+          <button
+            onClick={()=>{
+              setForm(emptyForm);
+              setEditingId(null);
+              setShowForm(true);
+            }}
+            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl"
+          >+</button>
+        </>
+      )}
+
       {showForm && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
           <div className="bg-gray-900 p-4 rounded w-full max-w-sm space-y-2">
@@ -134,11 +185,23 @@ function App() {
             <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
             <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange} />
 
-            <input className="w-full bg-gray-800 p-2 rounded" name="birth" placeholder="Data de nascimento" value={form.birth} onChange={handleChange} />
+            <input
+              className="w-full bg-gray-800 p-2 rounded"
+              name="birth"
+              placeholder="Data de nascimento"
+              value={form.birth}
+              onChange={handleChange}
+            />
 
             <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange} />
 
-            <input className="w-full bg-gray-800 p-2 rounded" name="infopem" placeholder="Infopem" value={form.infopem} onChange={handleChange} />
+            <input
+              className="w-full bg-gray-800 p-2 rounded"
+              name="infopem"
+              placeholder="Infopem"
+              value={form.infopem}
+              onChange={handleChange}
+            />
 
             <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
             <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
