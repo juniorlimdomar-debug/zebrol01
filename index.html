@@ -6,7 +6,6 @@
   <title>ZEBROL</title>
 
   <script src="https://cdn.tailwindcss.com"></script>
-
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -22,14 +21,13 @@
 <script type="text/babel">
 const { useState, useEffect } = React;
 
-const firebaseConfig = {
+firebase.initializeApp({
   apiKey: "AIzaSyBAH2rBIR5ibvde0VMVF38QyM4L2s8IqIQ",
   authDomain: "zebrol.firebaseapp.com",
   projectId: "zebrol",
   appId: "1:846397475446:web:1b38ce35dcae4e1754ed57"
-};
+});
 
-firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 
@@ -40,23 +38,17 @@ function App() {
 
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
-
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
+
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
 
   const emptyForm = {
-    image: "",
-    name: "",
-    vulgo: "",
-    faction: "",
-    cpf: "",
-    birth: "",
-    mother: "",
-    address: "",
-    description: ""
+    image:"", name:"", vulgo:"", faction:"",
+    cpf:"", birth:"", mother:"", address:"", description:""
   };
 
   const [form, setForm] = useState(emptyForm);
@@ -69,62 +61,50 @@ function App() {
       .collection("users")
       .doc(user.uid)
       .collection("items")
-      .onSnapshot(snapshot => {
-        const data = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setItems(data);
+      .onSnapshot(snap => {
+        setItems(snap.docs.map(d => ({ id:d.id, ...d.data() })));
       });
   }, [user]);
-
-  const login = async () => {
-    try {
-      await auth.signInWithEmailAndPassword(email, password);
-    } catch {
-      alert("Erro ao entrar");
-    }
-  };
-
-  const logout = () => auth.signOut();
 
   const handleChange = e => {
     const { name, value, files } = e.target;
     if (files && files[0]) {
-      const reader = new FileReader();
-      reader.onload = () => setForm(prev => ({ ...prev, [name]: reader.result }));
-      reader.readAsDataURL(files[0]);
+      const r = new FileReader();
+      r.onload = () => setForm(f => ({ ...f, [name]: r.result }));
+      r.readAsDataURL(files[0]);
     } else {
-      setForm(prev => ({ ...prev, [name]: value }));
+      setForm(f => ({ ...f, [name]: value }));
     }
   };
 
   const saveItem = async () => {
-    try {
-      const ref = db.collection("users").doc(user.uid).collection("items");
-      if (editingId) {
-        await ref.doc(editingId).update(form);
-      } else {
-        await ref.add(form);
-      }
-      setForm(emptyForm);
-      setEditingId(null);
-      setShowForm(false);
-    } catch (e) {
-      alert("Erro ao salvar");
-      console.error(e);
-    }
+    const ref = db.collection("users").doc(user.uid).collection("items");
+    editingId
+      ? await ref.doc(editingId).update(form)
+      : await ref.add(form);
+
+    setForm(emptyForm);
+    setEditingId(null);
+    setShowForm(false);
   };
 
-  const filteredItems = items
-    .filter(i => {
-      const t = search.toLowerCase();
-      return (
-        i.name?.toLowerCase().includes(t) ||
-        i.vulgo?.toLowerCase().includes(t) ||
-        i.faction?.toLowerCase().includes(t)
-      );
-    })
+  const deleteItem = async () => {
+    await db
+      .collection("users")
+      .doc(user.uid)
+      .collection("items")
+      .doc(selected.id)
+      .delete();
+
+    setConfirmDelete(false);
+    setSelected(null);
+  };
+
+  const filtered = items
+    .filter(i =>
+      [i.name,i.vulgo,i.faction]
+        .some(v => v?.toLowerCase().includes(search.toLowerCase()))
+    )
     .sort((a,b)=>a.name.localeCompare(b.name,"pt-BR",{sensitivity:"base"}));
 
   if (!user) {
@@ -133,7 +113,9 @@ function App() {
         <h1 className="text-3xl font-bold">ZEBROL</h1>
         <input className="bg-gray-800 p-2 rounded w-64" placeholder="Email" onChange={e=>setEmail(e.target.value)} />
         <input type="password" className="bg-gray-800 p-2 rounded w-64" placeholder="Senha" onChange={e=>setPassword(e.target.value)} />
-        <button onClick={login} className="bg-blue-600 px-4 py-2 rounded">Entrar</button>
+        <button onClick={()=>auth.signInWithEmailAndPassword(email,password)} className="bg-blue-600 px-4 py-2 rounded">
+          Entrar
+        </button>
       </div>
     );
   }
@@ -152,7 +134,7 @@ function App() {
       )}
 
       <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
-        {filteredItems.map(item => (
+        {filtered.map(item=>(
           <div
             key={item.id}
             onClick={()=>setSelected(item)}
@@ -167,10 +149,32 @@ function App() {
         ))}
       </div>
 
+      {/* BOTÕES FLUTUANTES */}
+      {!selected && !showForm && (
+        <>
+          <button
+            onClick={()=>setSearchOpen(!searchOpen)}
+            className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full text-2xl"
+          >🔍</button>
+
+          <button
+            onClick={()=>{
+              setForm(emptyForm);
+              setEditingId(null);
+              setShowForm(true);
+            }}
+            className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full text-3xl"
+          >+</button>
+        </>
+      )}
+
+      {/* MODAL DETALHES */}
       {selected && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
           <div className="relative bg-gray-900 p-6 rounded max-w-sm w-full">
-            <button onClick={()=>setSelected(null)} className="text-red-400 text-sm absolute top-2 right-2">Fechar</button>
+            <button onClick={()=>setSelected(null)} className="absolute top-2 right-2 text-red-400">
+              Fechar
+            </button>
 
             {selected.image && (
               <img src={selected.image} className="w-full object-contain rounded mb-3" />
@@ -194,32 +198,50 @@ function App() {
               }}
               className="absolute bottom-4 left-4 text-blue-500 text-2xl"
             >✏️</button>
+
+            <button
+              onClick={()=>setConfirmDelete(true)}
+              className="absolute bottom-4 right-4 text-red-500 text-2xl"
+            >🗑️</button>
           </div>
         </div>
       )}
 
-      <button onClick={()=>setSearchOpen(!searchOpen)} className="fixed bottom-6 left-6 bg-gray-800 w-14 h-14 rounded-full flex items-center justify-center text-2xl">🔍</button>
+      {/* CONFIRMAÇÃO DE EXCLUSÃO */}
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+          <div className="bg-gray-900 p-6 rounded-2xl w-80 space-y-4 text-center">
+            <p className="text-lg font-semibold">
+              Tem certeza que deseja excluir?
+            </p>
+            <div className="flex gap-4">
+              <button
+                onClick={deleteItem}
+                className="flex-1 bg-red-600 hover:bg-red-700 p-2 rounded-xl"
+              >
+                Sim
+              </button>
+              <button
+                onClick={()=>setConfirmDelete(false)}
+                className="flex-1 bg-gray-700 hover:bg-gray-600 p-2 rounded-xl"
+              >
+                Não
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-      <button
-        onClick={()=>{
-          setForm(emptyForm);
-          setEditingId(null);
-          setShowForm(true);
-        }}
-        className="fixed bottom-6 right-6 bg-blue-600 w-14 h-14 rounded-full flex items-center justify-center text-3xl"
-      >+</button>
-
-      <button onClick={logout} className="fixed top-4 right-4 text-red-400 text-sm">Sair</button>
-
+      {/* FORM */}
       {showForm && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
           <div className="bg-gray-900 p-4 rounded max-w-sm w-full space-y-2">
             <input type="file" name="image" onChange={handleChange} />
-            {Object.keys(emptyForm).filter(k=>k!=="image").map(k=>(
+            {Object.keys(emptyForm).filter(k=>k!=="image").map(k =>
               k==="description"
-                ? <textarea key={k} name={k} placeholder={k} className="w-full bg-gray-800 p-2 rounded" value={form[k]} onChange={handleChange}/>
-                : <input key={k} name={k} placeholder={k} className="w-full bg-gray-800 p-2 rounded" value={form[k]} onChange={handleChange}/>
-            ))}
+                ? <textarea key={k} name={k} value={form[k]} onChange={handleChange} className="w-full bg-gray-800 p-2 rounded" />
+                : <input key={k} name={k} value={form[k]} onChange={handleChange} className="w-full bg-gray-800 p-2 rounded" />
+            )}
             <button onClick={saveItem} className="w-full bg-blue-600 p-2 rounded">Salvar</button>
             <button onClick={()=>setShowForm(false)} className="w-full bg-gray-700 p-2 rounded">Cancelar</button>
           </div>
