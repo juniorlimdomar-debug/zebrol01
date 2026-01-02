@@ -156,6 +156,54 @@ function App() {
           </div>
         ))}
       </div>
+{selected && (
+  <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
+    <div className="relative bg-gray-900 p-6 rounded max-w-sm w-full">
+      <button
+        onClick={() => setSelected(null)}
+        className="absolute top-2 right-2 text-red-400"
+      >
+        Fechar
+      </button>
+
+      {selected.image && (
+        <img
+          src={selected.image}
+          className="w-full object-contain rounded mb-3"
+        />
+      )}
+
+      <p><b>Nome:</b> {selected.name}</p>
+      <p><b>Vulgo:</b> {selected.vulgo}</p>
+      <p><b>Facção:</b> {selected.faction}</p>
+      <p><b>CPF:</b> {selected.cpf}</p>
+      <p><b>Nasc:</b> {selected.birth}</p>
+      <p><b>Mãe:</b> {selected.mother}</p>
+      <p><b>Infopem:</b> {selected.infopem}</p>
+      <p><b>Endereço:</b> {selected.address}</p>
+      <p><b>Descrição:</b> {selected.description}</p>
+
+      <button
+        onClick={() => {
+          setForm(selected);
+          setEditingId(selected.id);
+          setShowForm(true);
+          setSelected(null);
+        }}
+        className="absolute bottom-4 left-4 text-blue-500 text-2xl"
+      >
+        ✏️
+      </button>
+
+      <button
+        onClick={() => setConfirmDelete(true)}
+        className="absolute bottom-4 right-4 text-red-500 text-2xl"
+      >
+        🗑️
+      </button>
+    </div>
+  </div>
+)}
 
       {!selected && !showForm && (
         <>
