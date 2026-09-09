@@ -13,6 +13,20 @@
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<style>
+  .mobile-overlay { position: fixed; top: var(--viewport-top, 0px); left: 0; right: 0; height: var(--viewport-height, 100dvh); padding: 12px; display: flex; align-items: center; justify-content: center; overflow: hidden; z-index: 60; }
+  .mobile-panel { width: 100%; max-height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; overflow-wrap: anywhere; }
+  .mobile-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .mobile-header, .mobile-actions { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
+  .mobile-header { border-bottom: 1px solid #374151; }
+  .mobile-actions { padding-top: 4px; padding-bottom: 8px; }
+  .mobile-panel button { min-height: 44px; }
+  .mobile-photo { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; object-position: center; }
+  .detail-close { display: flex; justify-content: flex-end; flex-shrink: 0; padding: 4px 12px 0; }
+  .mobile-form input:not([type=file]), .mobile-form textarea { font-size: 16px; }
+  .mobile-form fieldset { min-width: 0; }
+  .mobile-form input[type=file] { max-width: 100%; }
+</style>
 </head>
 
 <body class="bg-black text-white">
@@ -118,6 +132,80 @@ function App() {
   const savingLock = useRef(false);
   const imageLock = useRef(false);
   const busy = saving || processingImage;
+  const [crop, setCrop] = useState(null);
+  const cropLock = useRef(false);
+  const cropCanvas = useRef(null);
+  const [cropZoom, setCropZoom] = useState(1);
+  const [cropX, setCropX] = useState(50);
+  const [cropY, setCropY] = useState(50);
+
+  useEffect(() => {
+    if (!crop || !cropCanvas.current) return;
+    const canvas = cropCanvas.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const width = crop.naturalWidth;
+    const height = crop.naturalHeight;
+    const scale = Math.max(750 / width, 1000 / height) * cropZoom;
+    const sourceWidth = 750 / scale;
+    const sourceHeight = 1000 / scale;
+    const left = (width - sourceWidth) * cropX / 100;
+    const top = (height - sourceHeight) * cropY / 100;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 750, 1000);
+    ctx.drawImage(crop, left, top, sourceWidth, sourceHeight, 0, 0, 750, 1000);
+  }, [crop, cropZoom, cropX, cropY]);
+
+  const cancelCrop = () => {
+    if (imageLock.current) return;
+    setCrop(null);
+    cropLock.current = false;
+    setFormError('');
+  };
+
+  const applyCrop = async () => {
+    if (imageLock.current || !cropCanvas.current) return;
+    imageLock.current = true;
+    setProcessingImage(true);
+    setFormError('');
+    try {
+      const blob = await new Promise(resolve => cropCanvas.current.toBlob(resolve, 'image/jpeg', 0.9));
+      if (!blob) throw new Error('Não foi possível preparar a foto. Tente outra imagem.');
+      const image = await compressPhoto(blob);
+      setForm(f => ({ ...f, image }));
+      setCrop(null);
+      cropLock.current = false;
+    } catch (error) {
+      setFormError(error.message);
+    } finally {
+      imageLock.current = false;
+      setProcessingImage(false);
+    }
+  };
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const update = () => {
+      document.documentElement.style.setProperty('--viewport-height', (viewport ? viewport.height : window.innerHeight) + 'px');
+      document.documentElement.style.setProperty('--viewport-top', (viewport ? viewport.offsetTop : 0) + 'px');
+    };
+    update();
+    window.addEventListener('resize', update);
+    viewport?.addEventListener('resize', update);
+    viewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      viewport?.removeEventListener('resize', update);
+      viewport?.removeEventListener('scroll', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected && !showForm && !confirmDelete) return;
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = oldOverflow; };
+  }, [selected, showForm, confirmDelete]);
 
   useEffect(() => auth.onAuthStateChanged(setUser), []);
 
@@ -146,8 +234,25 @@ function App() {
     setProcessingImage(true);
     setFormError('');
     try {
-      const image = await compressPhoto(file);
-      setForm(f => ({ ...f, image }));
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('Escolha uma foto JPG, PNG ou WebP.');
+      if (file.size > 20 * 1024 * 1024) throw new Error('Escolha uma foto de até 20 MB.');
+      const url = URL.createObjectURL(file);
+      let picture;
+      try {
+        picture = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Não foi possível abrir essa foto.'));
+          img.src = url;
+        });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      setCropZoom(1);
+      setCropX(50);
+      setCropY(50);
+      cropLock.current = true;
+      setCrop(picture);
     } catch (error) {
       setFormError(error.message + ' A foto anterior, se houver, foi mantida.');
     } finally {
@@ -158,6 +263,7 @@ function App() {
 
   const saveItem = async () => {
     if (savingLock.current || imageLock.current) return;
+    if (cropLock.current) { setFormError('Confirme ou cancele o ajuste da foto antes de salvar.'); return; }
     setFormError('');
     if (!user) { setFormError('Entre novamente para salvar.'); return; }
     if (!navigator.onLine) { setFormError('Você está sem conexão. Conecte-se antes de salvar.'); return; }
@@ -244,7 +350,7 @@ function App() {
             onClick={()=>setSelected(item)}
             className="bg-gray-900 p-4 rounded cursor-pointer"
           >
-            <div className="h-32 bg-gray-700 rounded mb-2 overflow-hidden">
+            <div className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
               {item.image && <img src={item.image} className="w-full h-full object-cover" />}
             </div>
             <p className="text-center font-semibold">{item.name}</p>
@@ -254,18 +360,13 @@ function App() {
       </div>
 
       {selected && (
-        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4">
-          <div className="relative bg-gray-900 p-6 rounded max-w-sm w-full">
-
-           <button
-  onClick={() => setSelected(null)}
-  className="fixed top-6 right-6 text-red-400 text-2xl font-bold z-50"
->
-  ×
-</button>
+        <div className="mobile-overlay bg-black bg-opacity-70">
+          <div role="dialog" aria-modal="true" aria-label="Detalhes do cadastro" className="mobile-panel bg-gray-900 rounded max-w-sm">
+          <div className="detail-close"><button onClick={() => setSelected(null)} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
+          <div className="mobile-scroll p-4 space-y-2">
 
             {selected.image && (
-              <img src={selected.image} className="w-full object-contain rounded mb-3" />
+              <img src={selected.image} alt="Foto do cadastro" className="mobile-photo rounded mb-3" />
             )}
 
             <p><b>Nome:</b> {selected.name}</p>
@@ -276,7 +377,9 @@ function App() {
             <p><b>Mãe:</b> {selected.mother}</p>
             <p><b>Infopem:</b> {selected.infopem}</p>
             <p><b>Endereço:</b> {selected.address}</p>
-            <p><b>Descrição:</b> {selected.description}</p>
+            <p className="whitespace-pre-wrap"><b>Descrição:</b> {selected.description}</p>
+          </div>
+          <div className="mobile-actions">
 
             <button
               onClick={() => {
@@ -286,7 +389,7 @@ function App() {
                 setShowForm(true);
                 setSelected(null);
               }}
-              className="fixed bottom-6 left-6 text-blue-500 text-2xl z-50"
+              aria-label="Editar cadastro" className="px-3 text-blue-400 text-2xl"
             >
               ✏️
             </button>
@@ -296,17 +399,19 @@ function App() {
                 setConfirmDeleteId(selected.id); // ← AJUSTADO
                 setConfirmDelete(true);
               }}
-              className="fixed bottom-6 right-6 text-red-500 text-2xl z-50"
+              aria-label="Excluir cadastro" className="px-3 text-red-400 text-2xl"
             >
               🗑️
             </button>
+
+          </div>
           </div>
         </div>
       )}
 
       {confirmDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
-          <div className="bg-gray-900 p-6 rounded-2xl w-80 space-y-4 text-center">
+        <div className="mobile-overlay bg-black bg-opacity-80" style={{ zIndex: 80 }}>
+          <div className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full max-h-full overflow-y-auto space-y-4 text-center">
             <p className="text-lg font-semibold">
               Tem certeza que deseja excluir?
             </p>
@@ -355,11 +460,32 @@ function App() {
       )}
 
       {showForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
-          <div className="bg-gray-900 p-4 rounded w-full max-w-sm space-y-2 max-h-[90dvh] overflow-y-auto">
+        <div className="mobile-overlay bg-black bg-opacity-70">
+          <div role="dialog" aria-modal="true" aria-label="Formulário do cadastro" className="mobile-panel mobile-form bg-gray-900 rounded max-w-sm">
+            <div className="mobile-header"><h2 className="font-semibold">{editingId ? "Editar cadastro" : "Novo cadastro"}</h2></div>
+            <div className="mobile-scroll p-4 space-y-2">
             <fieldset disabled={busy} className="space-y-2 disabled:opacity-70">
             <input type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={handleChange} aria-label="Foto do cadastro" />
-            {form.image && <img src={form.image} alt="Prévia da foto do cadastro" className="max-h-40 mx-auto rounded object-contain" />}
+            {crop && (
+              <div className="space-y-3 py-2">
+                <p className="text-sm">Ajuste o enquadramento da foto:</p>
+                <canvas ref={cropCanvas} width="750" height="1000" aria-label="Prévia do recorte da foto" className="block w-full max-w-[225px] mx-auto rounded" style={{ aspectRatio: '3 / 4' }} />
+                <label className="block text-sm">Zoom
+                  <input aria-label="Zoom da foto" className="block w-full" type="range" min="1" max="4" step="0.01" value={cropZoom} onChange={e => setCropZoom(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição horizontal
+                  <input aria-label="Posição horizontal da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropX} onChange={e => setCropX(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição vertical
+                  <input aria-label="Posição vertical da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropY} onChange={e => setCropY(Number(e.target.value))} />
+                </label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={applyCrop} className="flex-1 bg-blue-600 p-2 rounded">Usar este recorte</button>
+                  <button type="button" onClick={cancelCrop} className="flex-1 bg-gray-700 p-2 rounded">Cancelar ajuste</button>
+                </div>
+              </div>
+            )}
+            {!crop && form.image && <img src={form.image} alt="Prévia da foto do cadastro" className="max-h-40 mx-auto rounded object-contain" />}
             {processingImage && <p role="status">Reduzindo a foto…</p>}
             {formError && <p role="alert" className="text-red-300 text-sm break-words">{formError}</p>}
             {saving && <p role="status" className="text-blue-200 text-sm">{saveStatus}</p>}
@@ -375,9 +501,10 @@ function App() {
             <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
             <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
 
-            <button onClick={saveItem} disabled={busy} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50 disabled:cursor-not-allowed">{processingImage ? "Processando foto…" : saving ? "Salvando…" : "Salvar"}</button>
-            <button disabled={busy} onClick={()=>{ setShowForm(false); setEditingId(null); setFormError(''); }} className="w-full bg-gray-700 p-2 rounded disabled:opacity-50">Cancelar</button>
+            <button onClick={saveItem} disabled={busy || !!crop} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50 disabled:cursor-not-allowed">{processingImage ? "Processando foto…" : saving ? "Salvando…" : "Salvar"}</button>
+            <button disabled={busy} onClick={()=>{ setShowForm(false); setEditingId(null); setFormError(''); setCrop(null); cropLock.current = false; }} className="w-full bg-gray-700 p-2 rounded disabled:opacity-50">Cancelar</button>
             </fieldset>
+            </div>
           </div>
         </div>
       )}
