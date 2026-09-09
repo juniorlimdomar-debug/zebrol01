@@ -26,6 +26,16 @@
   .mobile-form input:not([type=file]), .mobile-form textarea { font-size: 16px; }
   .mobile-form fieldset { min-width: 0; }
   .mobile-form input[type=file] { max-width: 100%; }
+  .detail-panel .mobile-photo { width: var(--detail-photo-width, 100%); max-width: 100%; height: auto; aspect-ratio: 3 / 4; margin-left: auto; margin-right: auto; }
+  .detail-overlay { padding: 8px; }
+  .detail-panel { width: calc(var(--detail-photo-width, 384px) + 24px); max-width: min(408px, 100%); }
+  .detail-content { padding: 0 6px 6px; }
+  .detail-photo-wrap { position: relative; width: var(--detail-photo-width, 100%); max-width: 100%; margin: 0 auto; min-height: 44px; }
+  .detail-photo-wrap .mobile-photo { width: 100%; margin: 0; }
+  .detail-photo-wrap .detail-close { position: absolute; top: 4px; right: 4px; z-index: 1; padding: 0; }
+  .detail-panel > .detail-close { padding: 0; height: 32px; min-height: 32px; }
+  .detail-panel > .detail-close button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; line-height: 1; }
+  .detail-text { margin-top: 8px; padding: 0 6px; }
 </style>
 </head>
 
@@ -135,6 +145,42 @@ function App() {
   const [crop, setCrop] = useState(null);
   const cropLock = useRef(false);
   const cropCanvas = useRef(null);
+  const detailPanel = useRef(null);
+  const detailText = useRef(null);
+  const detailClose = useRef(null);
+  const detailActions = useRef(null);
+
+  useEffect(() => {
+    if (!selected || !detailPanel.current) return;
+    const panel = detailPanel.current;
+    const updatePhotoSize = () => {
+      if (!detailText.current || !detailClose.current || !detailActions.current) return;
+      const viewportHeight = window.visualViewport?.height || window.innerHeight;
+      const contentWidth = Math.max(1, Math.min(408, window.innerWidth - 16) - 24);
+      const naturalHeight = contentWidth * 4 / 3;
+      const textHeight = detailText.current.getBoundingClientRect().height;
+      // Reserve outer margins, controls, content padding and the photo/text gap.
+      const available = viewportHeight - 16 - detailClose.current.offsetHeight - detailActions.current.offsetHeight - 12 - textHeight - 8;
+      const minimumHeight = Math.min(naturalHeight, viewportHeight * 0.48);
+      const photoHeight = Math.min(naturalHeight, Math.max(minimumHeight, available));
+      panel.style.setProperty('--detail-photo-width', (photoHeight * 3 / 4) + 'px');
+    };
+    updatePhotoSize();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updatePhotoSize) : null;
+    if (observer) {
+      observer.observe(detailText.current);
+      observer.observe(panel);
+      observer.observe(detailClose.current);
+      observer.observe(detailActions.current);
+    }
+    window.addEventListener('resize', updatePhotoSize);
+    window.visualViewport?.addEventListener('resize', updatePhotoSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updatePhotoSize);
+      window.visualViewport?.removeEventListener('resize', updatePhotoSize);
+    };
+  }, [selected]);
   const [cropZoom, setCropZoom] = useState(1);
   const [cropX, setCropX] = useState(50);
   const [cropY, setCropY] = useState(50);
@@ -360,15 +406,19 @@ function App() {
       </div>
 
       {selected && (
-        <div className="mobile-overlay bg-black bg-opacity-70">
-          <div role="dialog" aria-modal="true" aria-label="Detalhes do cadastro" className="mobile-panel bg-gray-900 rounded max-w-sm">
-          <div className="detail-close"><button onClick={() => setSelected(null)} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
-          <div className="mobile-scroll p-4 space-y-2">
+        <div className="mobile-overlay detail-overlay bg-black bg-opacity-70">
+          <div role="dialog" aria-modal="true" aria-label="Detalhes do cadastro" ref={detailPanel} className="mobile-panel detail-panel bg-gray-900 rounded">
+          <div ref={detailClose} className="detail-close"><button onClick={() => setSelected(null)} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
+          <div className="mobile-scroll detail-content">
+            <div className="detail-photo-wrap">
+            
 
             {selected.image && (
               <img src={selected.image} alt="Foto do cadastro" className="mobile-photo rounded mb-3" />
             )}
 
+            </div>
+            <div ref={detailText} className="detail-text space-y-1">
             <p><b>Nome:</b> {selected.name}</p>
             <p><b>Vulgo:</b> {selected.vulgo}</p>
             <p><b>Facção:</b> {selected.faction}</p>
@@ -378,8 +428,9 @@ function App() {
             <p><b>Infopem:</b> {selected.infopem}</p>
             <p><b>Endereço:</b> {selected.address}</p>
             <p className="whitespace-pre-wrap"><b>Descrição:</b> {selected.description}</p>
+            </div>
           </div>
-          <div className="mobile-actions">
+          <div ref={detailActions} className="mobile-actions">
 
             <button
               onClick={() => {
