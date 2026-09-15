@@ -105,12 +105,149 @@ function saveErrorMessage(error) {
   return error.message || 'Não foi possível salvar. Tente novamente.';
 }
 
+function photoRefs(uid, id) {
+  const item = db.collection('users').doc(uid).collection('items').doc(id);
+  return { item, full: item.collection('photos').doc('full'), thumb: item.collection('photos').doc('thumb') };
+}
+
+async function makeThumbnail(image) {
+  const img = await new Promise((resolve, reject) => {
+    const picture = new Image();
+    picture.onload = () => resolve(picture);
+    picture.onerror = () => reject(new Error('Não foi possível preparar a miniatura.'));
+    picture.src = image;
+  });
+  const canvas = document.createElement('canvas');
+  const scale = Math.min(1, 240 / Math.max(img.naturalWidth, img.naturalHeight));
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Este navegador não conseguiu preparar a miniatura.');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  for (const quality of [0.7, 0.5, 0.3]) {
+    const result = canvas.toDataURL('image/jpeg', quality);
+    if (result.length <= 32 * 1024) return result;
+  }
+  throw new Error('Miniatura muito grande. Escolha uma imagem menor.');
+}
+
+async function readFullPhoto(uid, item) {
+  if (item.image) return item.image;
+  if (!item.hasPhoto) return '';
+  const snap = await photoRefs(uid, item.id).full.get();
+  if (!snap.exists || !snap.data().image) throw new Error('A foto não está disponível. Verifique as permissões ou tente novamente.');
+  return snap.data().image;
+}
+
+// Atomic conversion: remove the old field only together with both photo writes.
+async function convertLegacyPhoto(uid, item) {
+  const original = item.image;
+  if (!original) return false;
+  const thumbnail = await makeThumbnail(original);
+  const refs = photoRefs(uid, item.id);
+  return db.runTransaction(async tx => {
+    const latest = await tx.get(refs.item);
+    if (!latest.exists || latest.data().image !== original) return false;
+    const version = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+    tx.set(refs.full, { image: original, version });
+    tx.set(refs.thumb, { image: thumbnail, version });
+    tx.update(refs.item, { image: firebase.firestore.FieldValue.delete(), hasPhoto: true, photoVersion: version });
+    return true;
+  });
+}
+
+function LazyThumbnail({ uid, item }) {
+  const host = useRef(null);
+  const [visible, setVisible] = useState(false);
+  const [image, setImage] = useState('');
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!host.current) return;
+    if (!window.IntersectionObserver) { setVisible(true); return; }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '160px' });
+    observer.observe(host.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    let active = true;
+    setImage('');
+    setFailed(false);
+    if (!visible) return;
+    if (item.image) { setImage(item.image); return; }
+    if (!item.hasPhoto) return;
+    photoRefs(uid, item.id).thumb.get().then(snap => {
+      if (!active) return;
+      if (!snap.exists || !snap.data().image) throw new Error('Miniatura indisponível');
+      setImage(snap.data().image);
+    }).catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [uid, item.id, item.image, item.hasPhoto, item.photoVersion, visible, retry]);
+  return <div ref={host} className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
+    {image && <img src={image} alt={item.name || 'Foto do cadastro'} loading="lazy" decoding="async" className="w-full h-full object-cover" />}
+    {failed && <button className="w-full h-full text-sm" onClick={e => { e.stopPropagation(); setRetry(n => n + 1); }}>Recarregar foto</button>}
+  </div>;
+}
+
+
 function App() {
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
   const [items, setItems] = useState([]);
+  const [listError, setListError] = useState('');
+  const [opening, setOpening] = useState(false);
+  const openSequence = useRef(0);
+  const [converting, setConverting] = useState(false);
+  const conversionLock = useRef(false);
+  const [conversionStatus, setConversionStatus] = useState('');
+  const conversionMode = new URLSearchParams(window.location.search).get('converterFotos') === '1';
+
+  const openDetails = async item => {
+    const sequence = ++openSequence.current;
+    setOpening(true);
+    try {
+      const image = await readFullPhoto(user.uid, item);
+      if (sequence === openSequence.current) setSelected({ ...item, image });
+    } catch (error) {
+      if (sequence === openSequence.current) window.alert('Não foi possível abrir a foto. ' + saveErrorMessage(error));
+    } finally {
+      if (sequence === openSequence.current) setOpening(false);
+    }
+  };
+
+  const convertExistingPhotos = async () => {
+    if (conversionLock.current || !user) return;
+    const legacy = items.filter(item => item.image);
+    if (!legacy.length) { setConversionStatus('Não há fotos antigas para converter.'); return; }
+    if (!window.confirm('Converter as fotos antigas desta conta? Execute somente após ajustar as regras do Firebase e atualizar o aplicativo em todos os aparelhos.')) return;
+    if (!navigator.onLine) { setConversionStatus('Conecte-se antes de converter.'); return; }
+    conversionLock.current = true;
+    setConverting(true);
+    let completed = 0;
+    let skipped = 0;
+    try {
+      for (const item of legacy) {
+        setConversionStatus('Convertendo ' + (completed + skipped + 1) + ' de ' + legacy.length + '…');
+        if (await convertLegacyPhoto(user.uid, item)) completed++;
+        else skipped++;
+      }
+      setConversionStatus(completed + ' fotos convertidas. ' + skipped + ' registros alterados por outra sessão foram ignorados; execute novamente se necessário.');
+    } catch (error) {
+      setConversionStatus(completed + ' fotos convertidas. Processo interrompido: ' + saveErrorMessage(error) + ' As fotos restantes foram preservadas. Você pode tentar novamente.');
+    } finally {
+      conversionLock.current = false;
+      setConverting(false);
+    }
+  };
   const [selected, setSelected] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -258,14 +395,20 @@ function App() {
   useEffect(() => auth.onAuthStateChanged(setUser), []);
 
   useEffect(() => {
+    openSequence.current++;
+    setOpening(false);
+    setSelected(null);
+    setItems([]);
+    setListError('');
     if (!user) return;
     return db
       .collection("users")
       .doc(user.uid)
       .collection("items")
       .onSnapshot(snap => {
+        setListError('');
         setItems(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-      });
+      }, error => setListError('Não foi possível carregar os cadastros. ' + saveErrorMessage(error)));
   }, [user]);
 
   const handleChange = async e => {
@@ -329,8 +472,25 @@ function App() {
     }, 15000);
     try {
       const ref = db.collection('users').doc(user.uid).collection('items');
-      if (editingId) await ref.doc(editingId).update(payload);
-      else await ref.add(payload);
+      const target = editingId ? ref.doc(editingId) : ref.doc();
+      const refs = photoRefs(user.uid, target.id);
+      const image = payload.image;
+      delete payload.image;
+      const batch = db.batch();
+      if (image) {
+        const thumbnail = await makeThumbnail(image);
+        const version = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+        batch.set(refs.full, { image, version });
+        batch.set(refs.thumb, { image: thumbnail, version });
+        payload.hasPhoto = true;
+        payload.photoVersion = version;
+      } else {
+        payload.hasPhoto = false;
+        payload.photoVersion = '';
+      }
+      if (editingId) batch.update(target, { ...payload, image: firebase.firestore.FieldValue.delete() });
+      else batch.set(target, payload);
+      await batch.commit();
       setForm(emptyForm);
       setEditingId(null);
       setShowForm(false);
@@ -368,16 +528,20 @@ function App() {
   };
 
   const deleteItem = async () => {
-    await db
-      .collection("users")
-      .doc(user.uid)
-      .collection("items")
-      .doc(confirmDeleteId) // ← AJUSTADO
-      .delete();
-
-    setConfirmDelete(false);
-    setConfirmDeleteId(null); // ← LIMPA
-    setSelected(null);
+    if (!user || !confirmDeleteId) return;
+    try {
+      const refs = photoRefs(user.uid, confirmDeleteId);
+      const batch = db.batch();
+      batch.delete(refs.full);
+      batch.delete(refs.thumb);
+      batch.delete(refs.item);
+      await batch.commit();
+      setConfirmDelete(false);
+      setConfirmDeleteId(null);
+      setSelected(null);
+    } catch (error) {
+      window.alert('Não foi possível excluir o cadastro. ' + saveErrorMessage(error));
+    }
   };
 
   const filtered = items
@@ -404,6 +568,13 @@ function App() {
     <div className="min-h-screen p-6 space-y-6">
       <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
 
+      {listError && <p role="alert" className="text-red-300 text-center">{listError}</p>}
+      {opening && <p role="status" className="text-gray-400 text-center">Carregando foto…</p>}
+      {conversionMode && <div className="max-w-md mx-auto space-y-2">
+        <button onClick={convertExistingPhotos} disabled={converting} className="bg-blue-600 p-2 rounded disabled:opacity-50">{converting ? 'Convertendo…' : 'Converter fotos antigas'}</button>
+        <p role="status">{conversionStatus}</p>
+      </div>}
+
       {searchOpen && (
         <input
           className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
@@ -422,12 +593,10 @@ function App() {
         {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
             key={item.id}
-            onClick={()=>setSelected(item)}
+            onClick={()=>openDetails(item)}
             className="bg-gray-900 p-4 rounded cursor-pointer"
           >
-            <div className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
-              {item.image && <img src={item.image} className="w-full h-full object-cover" />}
-            </div>
+            <LazyThumbnail uid={user.uid} item={item} />
             <p className="text-center font-semibold">{item.name}</p>
             <p className="text-center text-sm text-gray-400">{item.vulgo}</p>
           </div>
@@ -442,12 +611,10 @@ function App() {
         {filtered.filter(item => item.alertaGeral !== true).map(item=>(
           <div
             key={item.id}
-            onClick={()=>setSelected(item)}
+            onClick={()=>openDetails(item)}
             className="bg-gray-900 p-4 rounded cursor-pointer"
           >
-            <div className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
-              {item.image && <img src={item.image} className="w-full h-full object-cover" />}
-            </div>
+            <LazyThumbnail uid={user.uid} item={item} />
             <p className="text-center font-semibold">{item.name}</p>
             <p className="text-center text-sm text-gray-400">{item.vulgo}</p>
           </div>
