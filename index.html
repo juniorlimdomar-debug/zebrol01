@@ -115,6 +115,8 @@ function App() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
 
+  const [alertSaving, setAlertSaving] = useState(false);
+  const alertLock = useRef(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null); // ← ADICIONADO
 
@@ -343,6 +345,28 @@ function App() {
     }
   };
 
+  const toggleGeneralAlert = async () => {
+    if (alertLock.current || !selected || !user) return;
+    const targetId = selected.id;
+    const nextValue = selected.alertaGeral !== true;
+    if (!window.confirm(nextValue ? 'Ativar o alerta geral deste cadastro?' : 'Retirar o alerta geral deste cadastro?')) return;
+    if (!navigator.onLine) {
+      window.alert('Sem conexão. Conecte-se para alterar o alerta.');
+      return;
+    }
+    alertLock.current = true;
+    setAlertSaving(true);
+    try {
+      await db.collection('users').doc(user.uid).collection('items').doc(targetId).update({ alertaGeral: nextValue });
+      setSelected(current => current && current.id === targetId ? { ...current, alertaGeral: nextValue } : current);
+    } catch (error) {
+      window.alert('Não foi possível alterar o alerta geral. ' + saveErrorMessage(error));
+    } finally {
+      alertLock.current = false;
+      setAlertSaving(false);
+    }
+  };
+
   const deleteItem = async () => {
     await db
       .collection("users")
@@ -389,8 +413,13 @@ function App() {
         />
       )}
 
+      <section aria-labelledby="alerta-geral-heading" className="max-w-md mx-auto space-y-4">
+        <h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2>
+        {!items.some(item => item.alertaGeral === true) ? (
+          <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>
+        ) : (
       <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
-        {filtered.map(item=>(
+        {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
             key={item.id}
             onClick={()=>setSelected(item)}
@@ -404,6 +433,27 @@ function App() {
           </div>
         ))}
       </div>
+        )}
+      </section>
+
+      <section aria-labelledby="todos-heading" className="max-w-md mx-auto space-y-4">
+        <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS</h2>
+      <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+        {filtered.filter(item => item.alertaGeral !== true).map(item=>(
+          <div
+            key={item.id}
+            onClick={()=>setSelected(item)}
+            className="bg-gray-900 p-4 rounded cursor-pointer"
+          >
+            <div className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
+              {item.image && <img src={item.image} className="w-full h-full object-cover" />}
+            </div>
+            <p className="text-center font-semibold">{item.name}</p>
+            <p className="text-center text-sm text-gray-400">{item.vulgo}</p>
+          </div>
+        ))}
+      </div>
+      </section>
 
       {selected && (
         <div className="mobile-overlay detail-overlay bg-black bg-opacity-70">
@@ -443,6 +493,18 @@ function App() {
               aria-label="Editar cadastro" className="px-3 text-blue-400 text-2xl"
             >
               ✏️
+            </button>
+
+            <button
+              onClick={toggleGeneralAlert}
+              disabled={alertSaving}
+              aria-label={selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
+              aria-pressed={selected.alertaGeral === true}
+              title={alertSaving ? 'Atualizando alerta…' : selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
+              className="px-3 text-2xl disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ color: selected.alertaGeral === true ? '#ef4444' : '#9ca3af' }}
+            >
+              <span aria-hidden="true" style={{ display: 'inline-block', filter: selected.alertaGeral === true ? 'brightness(0) saturate(100%) invert(36%) sepia(90%) saturate(1600%) hue-rotate(335deg) brightness(103%) contrast(90%)' : 'grayscale(1)' }}>💀</span>
             </button>
 
             <button
