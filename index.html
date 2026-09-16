@@ -589,16 +589,16 @@ function App() {
         {!items.some(item => item.alertaGeral === true) ? (
           <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>
         ) : (
-      <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
         {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
             key={item.id}
             onClick={()=>openDetails(item)}
-            className="bg-gray-900 p-4 rounded cursor-pointer"
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0"
           >
             <LazyThumbnail uid={user.uid} item={item} />
-            <p className="text-center font-semibold">{item.name}</p>
-            <p className="text-center text-sm text-gray-400">{item.vulgo}</p>
+            <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.vulgo}</p>
           </div>
         ))}
       </div>
@@ -607,16 +607,16 @@ function App() {
 
       <section aria-labelledby="todos-heading" className="max-w-md mx-auto space-y-4">
         <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS</h2>
-      <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
         {filtered.filter(item => item.alertaGeral !== true).map(item=>(
           <div
             key={item.id}
             onClick={()=>openDetails(item)}
-            className="bg-gray-900 p-4 rounded cursor-pointer"
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0"
           >
             <LazyThumbnail uid={user.uid} item={item} />
-            <p className="text-center font-semibold">{item.name}</p>
-            <p className="text-center text-sm text-gray-400">{item.vulgo}</p>
+            <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.vulgo}</p>
           </div>
         ))}
       </div>
