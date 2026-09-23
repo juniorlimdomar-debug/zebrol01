@@ -251,6 +251,17 @@ function App() {
   const [selected, setSelected] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [formType, setFormType] = useState('person');
+  const [vehicleForm, setVehicleForm] = useState({ model: '', ownerName: '', ownerId: '', alert: '' });
+  const [ownerSearching, setOwnerSearching] = useState(false);
+  const personItems = items.filter(item => item.type !== 'vehicle');
+  const ownerSuggestions = personItems.filter(item => String(item.name || '').toLocaleLowerCase('pt-BR').includes(vehicleForm.ownerName.trim().toLocaleLowerCase('pt-BR')));
+  const switchFormType = () => {
+    if (busy || editingId) return;
+    setFormType(current => current === 'person' ? 'vehicle' : 'person');
+    setFormError('');
+    setOwnerSearching(false);
+  };
 
   const [alertSaving, setAlertSaving] = useState(false);
   const alertLock = useRef(false);
@@ -458,7 +469,11 @@ function App() {
     setFormError('');
     if (!user) { setFormError('Entre novamente para salvar.'); return; }
     if (!navigator.onLine) { setFormError('Você está sem conexão. Conecte-se antes de salvar.'); return; }
-    const payload = Object.fromEntries(Object.keys(emptyForm).map(key => [key, String(form[key] ?? '')]));
+    if (formType === 'vehicle' && !vehicleForm.model.trim()) { setFormError('Informe o modelo do veículo.'); return; }
+    if (formType === 'vehicle' && vehicleForm.ownerId && !personItems.some(p => p.id === vehicleForm.ownerId)) { setFormError('O proprietário selecionado não está mais cadastrado. Selecione novamente.'); return; }
+    const payload = formType === 'vehicle'
+      ? { type: 'vehicle', name: vehicleForm.model.trim(), model: vehicleForm.model.trim(), ownerName: vehicleForm.ownerName.trim(), ownerId: vehicleForm.ownerId || '', alert: vehicleForm.alert.trim(), description: form.description, image: form.image }
+      : Object.fromEntries(Object.keys(emptyForm).map(key => [key, String(form[key] ?? '')]));
     // Conservative ceiling leaves room for Firestore document metadata.
     if (new TextEncoder().encode(JSON.stringify(payload)).length > 700 * 1024) {
       setFormError('O cadastro está muito grande. Escolha novamente a foto para reduzi-la ou diminua os textos.');
@@ -546,7 +561,7 @@ function App() {
 
   const filtered = items
     .filter(i =>
-      [i.name, i.vulgo, i.faction]
+      [i.name, i.vulgo, i.faction, i.ownerName]
         .some(v => v?.toLowerCase().includes(search.toLowerCase()))
     )
     .sort((a,b)=>a.name.localeCompare(b.name,"pt-BR",{sensitivity:"base"}));
@@ -598,7 +613,8 @@ function App() {
           >
             <LazyThumbnail uid={user.uid} item={item} />
             <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
-            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.vulgo}</p>
+            {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
           </div>
         ))}
       </div>
@@ -616,7 +632,8 @@ function App() {
           >
             <LazyThumbnail uid={user.uid} item={item} />
             <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
-            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.vulgo}</p>
+            {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
           </div>
         ))}
       </div>
@@ -636,6 +653,16 @@ function App() {
 
             </div>
             <div ref={detailText} className="detail-text space-y-1">
+            {selected.type === 'vehicle' ? <>
+              <p><b>Modelo:</b> {selected.model || selected.name}</p>
+              <p className="whitespace-pre-wrap"><b>Alerta:</b> {selected.alert || 'Não informado'}</p>
+              <p><b>Proprietário:</b> {personItems.some(p => p.id === selected.ownerId) ? (
+                <button type="button" className="text-blue-400 underline break-words text-left" style={{ minHeight: 'auto', padding: 0 }} onClick={() => {
+                  const owner = personItems.find(p => p.id === selected.ownerId);
+                  if (owner) openDetails(owner);
+                }}>{personItems.find(p => p.id === selected.ownerId).name}</button>
+              ) : (selected.ownerName || 'Não informado')}</p>
+            </> : <>
             <p><b>Nome:</b> {selected.name}</p>
             <p><b>Vulgo:</b> {selected.vulgo}</p>
             <p><b>Facção:</b> {selected.faction}</p>
@@ -644,7 +671,13 @@ function App() {
             <p><b>Mãe:</b> {selected.mother}</p>
             <p><b>Infopem:</b> {selected.infopem}</p>
             <p><b>Endereço:</b> {selected.address}</p>
+            </>}
             <p className="whitespace-pre-wrap"><b>Descrição:</b> {selected.description}</p>
+            {selected.type !== 'vehicle' && <div className="pt-3 space-y-2">
+              <p className="font-semibold">Veículos</p>
+              {!items.some(v => v.type === 'vehicle' && v.ownerId === selected.id) && <p className="text-sm text-gray-400">Nenhum veículo vinculado.</p>}
+              {items.filter(v => v.type === 'vehicle' && v.ownerId === selected.id).map(v => <button key={v.id} onClick={() => openDetails(v)} className="block w-full text-left bg-gray-800 p-2 rounded break-words">🏍️ {v.model || v.name}{v.alertaGeral === true ? ' · Alerta ativo' : ''}</button>)}
+            </div>}
             </div>
           </div>
           <div ref={detailActions} className="mobile-actions">
@@ -652,6 +685,9 @@ function App() {
             <button
               onClick={() => {
                 setForm(Object.fromEntries(Object.keys(emptyForm).map(key => [key, selected[key] ?? ''])));
+                setFormType(selected.type === 'vehicle' ? 'vehicle' : 'person');
+                setVehicleForm({ model: selected.model || '', ownerName: selected.ownerName || '', ownerId: selected.ownerId || '', alert: selected.alert || '' });
+                setOwnerSearching(false);
                 setFormError('');
                 setEditingId(selected.id);
                 setShowForm(true);
@@ -726,6 +762,9 @@ function App() {
          <button
   onClick={()=>{
     setForm(emptyForm);
+    setFormType('person');
+    setVehicleForm({ model: '', ownerName: '', ownerId: '', alert: '' });
+    setOwnerSearching(false);
     setFormError('');
     setEditingId(null);
     setShowForm(true);
@@ -742,7 +781,9 @@ function App() {
       {showForm && (
         <div className="mobile-overlay bg-black bg-opacity-70">
           <div role="dialog" aria-modal="true" aria-label="Formulário do cadastro" className="mobile-panel mobile-form bg-gray-900 rounded max-w-sm">
-            <div className="mobile-header"><h2 className="font-semibold">{editingId ? "Editar cadastro" : "Novo cadastro"}</h2></div>
+            <div className="mobile-header"><h2 className="font-semibold">{formType === 'vehicle' ? (editingId ? 'Editar veículo' : 'Cadastrar veículo') : (editingId ? 'Editar pessoa' : 'Cadastrar pessoa')}</h2>
+              {!editingId && <button type="button" disabled={busy || !!crop} onClick={switchFormType} className="text-2xl px-2 disabled:opacity-50" aria-label={formType === 'vehicle' ? 'Cadastrar pessoa' : 'Cadastrar veículo'} title={formType === 'vehicle' ? 'Cadastrar pessoa' : 'Cadastrar veículo'}>{formType === 'vehicle' ? '👤' : '🏍️'}</button>}
+            </div>
             <div className="mobile-scroll p-4 space-y-2">
             <fieldset disabled={busy} className="space-y-2 disabled:opacity-70">
             <input type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={handleChange} aria-label="Foto do cadastro" />
@@ -770,6 +811,24 @@ function App() {
             {formError && <p role="alert" className="text-red-300 text-sm break-words">{formError}</p>}
             {saving && <p role="status" className="text-blue-200 text-sm">{saveStatus}</p>}
 
+            {formType === 'vehicle' ? <>
+              <label className="block text-sm">Modelo
+                <input className="w-full bg-gray-800 p-2 rounded" maxLength={120} value={vehicleForm.model} onChange={e => setVehicleForm(v => ({ ...v, model: e.target.value }))} placeholder="Modelo do veículo" />
+              </label>
+              <label className="block text-sm">Alerta
+                <input className="w-full bg-gray-800 p-2 rounded" maxLength={500} value={vehicleForm.alert} onChange={e => setVehicleForm(v => ({ ...v, alert: e.target.value }))} placeholder="Digite o alerta do veículo" />
+              </label>
+              <label className="block text-sm">Proprietário
+                <input className="w-full bg-gray-800 p-2 rounded" autoComplete="off" maxLength={120} value={vehicleForm.ownerName} onChange={e => { setVehicleForm(v => ({ ...v, ownerName: e.target.value, ownerId: '' })); setOwnerSearching(true); }} placeholder="Digite o nome e selecione a pessoa" />
+              </label>
+              {ownerSearching && vehicleForm.ownerName.trim() && <div className="max-h-40 overflow-y-auto bg-gray-800 rounded">
+                {ownerSuggestions.map(p => <button type="button" key={p.id} className="block w-full text-left p-2 border-b border-gray-700" onClick={() => { setVehicleForm(v => ({ ...v, ownerName: p.name, ownerId: p.id })); setOwnerSearching(false); }}>
+                  <span>{p.name}</span><span className="block text-xs text-gray-400">{[p.vulgo, p.birth, p.mother].filter(Boolean).join(' · ') || 'Sem informações complementares'}</span>
+                </button>)}
+                {!ownerSuggestions.length && <p className="p-2 text-sm text-gray-400">Nenhuma pessoa encontrada.</p>}
+              </div>}
+              <p className="text-xs text-gray-400">{vehicleForm.ownerId ? 'Proprietário vinculado ao cadastro selecionado.' : 'Sem seleção, o nome será salvo sem vínculo.'}</p>
+            </> : <>
             <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange} />
             <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange} />
             <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
@@ -779,6 +838,7 @@ function App() {
             <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange} />
             <input className="w-full bg-gray-800 p-2 rounded" name="infopem" placeholder="Infopem" value={form.infopem} onChange={handleChange} />
             <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
+            </>}
             <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
 
             <button onClick={saveItem} disabled={busy || !!crop} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50 disabled:cursor-not-allowed">{processingImage ? "Processando foto…" : saving ? "Salvando…" : "Salvar"}</button>
