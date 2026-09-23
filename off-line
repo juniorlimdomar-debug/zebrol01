@@ -1,0 +1,1289 @@
+const CACHE = 'zebrol-shell-offline-v1';
+const FILES = ['index.html','offline-store.js','offline-register.js','manifest.webmanifest','icon-192.png','icon-512.png',
+  'vendor/tailwind.js','vendor/react.js','vendor/react-dom.js','vendor/babel.js',
+  'vendor/firebase-app.js','vendor/firebase-auth.js','vendor/firebase-firestore.js'];
+const urls = FILES.map(file => new URL(file,self.registration.scope).href);
+self.addEventListener('install',event => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await cache.addAll(urls.map(url => new Request(url,{ cache: 'reload' })));
+    // Initial installation activates immediately. Later versions wait for old
+    // tabs to close, preventing a mixed-version page during an offline save.
+  })());
+});
+self.addEventListener('activate',event => {
+  event.waitUntil((async () => {
+    const names = await caches.keys();
+    await Promise.all(names.filter(name => name.startsWith('zebrol-shell-offline-') && name !== CACHE).map(name => caches.delete(name)));
+    await self.clients.claim();
+  })());
+});
+self.addEventListener('fetch',event => {
+  const url = new URL(event.request.url);
+  if(event.request.method !== 'GET' || url.origin !== self.location.origin) return;
+  const scope = new URL(self.registration.scope);
+  const home = new URL('index.html',scope).href;
+  const navigation = event.request.mode === 'navigate' && (url.pathname === scope.pathname || url.pathname === new URL(home).pathname);
+  const target = navigation ? home : url.href;
+  // Cache ONLY the finite app shell. Never cache Firebase replies, photos,
+  // authentication endpoints, arbitrary navigations or user data here.
+  if(!urls.includes(target)) return;
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    const cached = await cache.match(target);
+    if(cached) return cached;
+    return fetch(event.request);
+  })());
+});
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ZEBROL</title>
+
+  <script src="vendor/tailwind.js"></script>
+  <script crossorigin src="vendor/react.js"></script>
+  <script crossorigin src="vendor/react-dom.js"></script>
+  <script src="vendor/babel.js"></script>
+
+  <script src="vendor/firebase-app.js"></script>
+  <script src="vendor/firebase-auth.js"></script>
+  <script src="vendor/firebase-firestore.js"></script>
+<style>
+  .mobile-overlay { position: fixed; top: var(--viewport-top, 0px); left: 0; right: 0; height: var(--viewport-height, 100dvh); padding: 12px; display: flex; align-items: center; justify-content: center; overflow: hidden; z-index: 60; }
+  .mobile-panel { width: 100%; max-height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; overflow-wrap: anywhere; }
+  .mobile-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .mobile-header, .mobile-actions { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
+  .mobile-header { border-bottom: 1px solid #374151; }
+  .mobile-actions { padding-top: 4px; padding-bottom: 8px; }
+  .mobile-panel button { min-height: 44px; }
+  .mobile-photo { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; object-position: center; }
+  .detail-close { display: flex; justify-content: flex-end; flex-shrink: 0; padding: 4px 12px 0; }
+  .mobile-form input:not([type=file]), .mobile-form textarea { font-size: 16px; }
+  .mobile-form fieldset { min-width: 0; }
+  .mobile-form input[type=file] { max-width: 100%; }
+  .detail-panel .mobile-photo { width: var(--detail-photo-width, 100%); max-width: 100%; height: auto; aspect-ratio: 3 / 4; margin-left: auto; margin-right: auto; }
+  .detail-overlay { padding: 8px; }
+  .detail-panel { width: calc(var(--detail-photo-width, 384px) + 24px); max-width: min(408px, 100%); }
+  .detail-content { padding: 0 6px 6px; }
+  .detail-photo-wrap { position: relative; width: var(--detail-photo-width, 100%); max-width: 100%; margin: 0 auto; min-height: 44px; }
+  .detail-photo-wrap .mobile-photo { width: 100%; margin: 0; }
+  .detail-photo-wrap .detail-close { position: absolute; top: 4px; right: 4px; z-index: 1; padding: 0; }
+  .detail-panel > .detail-close { padding: 0; height: 32px; min-height: 32px; }
+  .detail-panel > .detail-close button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; line-height: 1; }
+  .detail-text { margin-top: 8px; padding: 0 6px; }
+</style>
+<meta name="theme-color" content="#000000" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<script src="offline-store.js"></script>
+<script src="offline-register.js" defer></script>
+</head>
+
+<body class="bg-black text-white">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+firebase.initializeApp({
+  apiKey: "AIzaSyBAH2rBIR5ibvde0VMVF38QyM4L2s8IqIQ",
+  authDomain: "zebrol.firebaseapp.com",
+  projectId: "zebrol",
+  appId: "1:846397475446:web:1b38ce35dcae4e1754ed57"
+});
+
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+async function compressPhoto(file) {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    throw new Error('Escolha uma foto JPG, PNG ou WebP. Converta fotos HEIC para JPG antes de enviar.');
+  }
+  if (file.size > 20 * 1024 * 1024) throw new Error('A foto original deve ter no máximo 20 MB.');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const picture = new Image();
+      picture.onload = () => resolve(picture);
+      picture.onerror = () => reject(new Error('Não foi possível abrir essa foto. Escolha outro arquivo.'));
+      picture.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Este navegador não conseguiu processar a foto.');
+    for (const maxSide of [1000, 800, 600, 400]) {
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(img, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.85, 0.7, 0.55, 0.4]) {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+        if (blob && blob.size <= 300 * 1024) {
+          return await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Não foi possível ler a foto processada.'));
+            reader.readAsDataURL(blob);
+          });
+        }
+      }
+    }
+    throw new Error('Não foi possível reduzir a foto o suficiente. Escolha outra imagem.');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function saveErrorMessage(error) {
+  const code = (error.code || '').replace('firestore/', '');
+  if (code === 'permission-denied') return 'O Firebase recusou a gravação. Verifique as regras de acesso do banco.';
+  if (code === 'unauthenticated') return 'Sua sessão expirou. Entre novamente antes de salvar.';
+  if (code === 'unavailable' || code === 'deadline-exceeded') return 'Não foi possível confirmar a gravação. Verifique sua conexão.';
+  if (code === 'resource-exhausted') return 'O Firebase atingiu um limite de uso. Verifique as cotas do projeto.';
+  return error.message || 'Não foi possível salvar. Tente novamente.';
+}
+
+function photoRefs(uid, id) {
+  const item = db.collection('users').doc(uid).collection('items').doc(id);
+  return { item, full: item.collection('photos').doc('full'), thumb: item.collection('photos').doc('thumb') };
+}
+
+async function makeThumbnail(image) {
+  const img = await new Promise((resolve, reject) => {
+    const picture = new Image();
+    picture.onload = () => resolve(picture);
+    picture.onerror = () => reject(new Error('Não foi possível preparar a miniatura.'));
+    picture.src = image;
+  });
+  const canvas = document.createElement('canvas');
+  const scale = Math.min(1, 240 / Math.max(img.naturalWidth, img.naturalHeight));
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Este navegador não conseguiu preparar a miniatura.');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  for (const quality of [0.7, 0.5, 0.3]) {
+    const result = canvas.toDataURL('image/jpeg', quality);
+    if (result.length <= 32 * 1024) return result;
+  }
+  throw new Error('Miniatura muito grande. Escolha uma imagem menor.');
+}
+
+async function readFullPhoto(uid, item) {
+  if (item.image) return item.image;
+  if (!item.hasPhoto) return '';
+  const snap = await photoRefs(uid, item.id).full.get();
+  if (!snap.exists || !snap.data().image) throw new Error('A foto não está disponível. Verifique as permissões ou tente novamente.');
+  return snap.data().image;
+}
+
+// Atomic conversion: remove the old field only together with both photo writes.
+async function convertLegacyPhoto(uid, item) {
+  const original = item.image;
+  if (!original) return false;
+  const thumbnail = await makeThumbnail(original);
+  const refs = photoRefs(uid, item.id);
+  return db.runTransaction(async tx => {
+    const latest = await tx.get(refs.item);
+    if (!latest.exists || latest.data().image !== original) return false;
+    const version = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+    tx.set(refs.full, { image: original, version });
+    tx.set(refs.thumb, { image: thumbnail, version });
+    tx.update(refs.item, { image: firebase.firestore.FieldValue.delete(), hasPhoto: true, photoVersion: version });
+    return true;
+  });
+}
+
+function LazyThumbnail({ uid, item }) {
+  const host = useRef(null);
+  const [visible, setVisible] = useState(false);
+  const [image, setImage] = useState('');
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    const online = () => setRetry(n => n + 1);
+    window.addEventListener('online',online);
+    return () => window.removeEventListener('online',online);
+  }, []);
+  useEffect(() => {
+    if (!host.current) return;
+    if (!window.IntersectionObserver) { setVisible(true); return; }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '160px' });
+    observer.observe(host.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    let active = true;
+    setImage('');
+    setFailed(false);
+    if (!visible) return;
+    loadThumbnail(uid,item).then(thumbnail => {
+      if(active) setImage(thumbnail);
+    }).catch(() => { if(active) setFailed(navigator.onLine); });
+    return () => { active = false; };
+  }, [uid, item.id, item.image, item.hasPhoto, item.photoVersion, item._pending, visible, retry]);
+  return <div ref={host} className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
+    {image && <img src={image} alt={item.name || 'Foto do cadastro'} loading="lazy" decoding="async" className="w-full h-full object-cover" />}
+    {failed && <button className="w-full h-full text-sm" onClick={e => { e.stopPropagation(); setRetry(n => n + 1); }}>Recarregar foto</button>}
+  </div>;
+}
+
+
+const offline = window.ZebrolOffline;
+let offlineSyncRunning = false;
+const offlineChanges = new EventTarget();
+const offlineChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('zebrol-pending-v1') : null;
+function announceOfflineChange() {
+  offlineChanges.dispatchEvent(new Event('change'));
+  offlineChannel?.postMessage('change');
+}
+if (offlineChannel) offlineChannel.onmessage = () => offlineChanges.dispatchEvent(new Event('change'));
+
+async function withPhotoDeadline(promise) {
+  let timer;
+  try {
+    return await Promise.race([promise,new Promise((_,reject) => {
+      timer = setTimeout(() => reject(new Error('Foto indisponível no momento.')),3500);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+async function syncPending(uid) {
+  if (offlineSyncRunning || !navigator.onLine || auth.currentUser?.uid !== uid) return;
+  offlineSyncRunning = true;
+  try {
+    const entries = await offline.getPending(uid);
+    for (const entry of entries) {
+      if (!navigator.onLine || auth.currentUser?.uid !== uid) break;
+      try {
+        const refs = photoRefs(uid, entry.id);
+        // Stable document ID + token make retries safe after a lost acknowledgement
+        // or simultaneous sends by two browser tabs.
+        await db.runTransaction(async tx => {
+          const existing = await tx.get(refs.item);
+          if (existing.exists) {
+            if (existing.data()._creationToken !== entry.token) throw new Error('Conflito de cadastro. O envio permanece pendente.');
+            return;
+          }
+          if (entry.item.ownerId) {
+            const owner = await tx.get(photoRefs(uid, entry.item.ownerId).item);
+            if (!owner.exists || owner.data().type === 'vehicle') throw new Error('O proprietário ainda não está disponível. O veículo permanece pendente.');
+          }
+          tx.set(refs.item, { ...entry.item, _creationToken: entry.token });
+          if (entry.image) {
+            tx.set(refs.full, { image: entry.image, version: entry.item.photoVersion });
+            tx.set(refs.thumb, { image: entry.thumbnail, version: entry.item.photoVersion });
+          }
+        });
+        // Thumbnail caching is optional and must not prevent acknowledgement.
+        await offline.putThumb(uid,entry.id,entry.item.photoVersion,entry.thumbnail).catch(() => {});
+        await offline.confirm(entry);
+        announceOfflineChange();
+      } catch (error) {
+        await offline.setPendingError(uid,entry.id,saveErrorMessage(error));
+        announceOfflineChange();
+        if (!navigator.onLine || ['unavailable','unauthenticated','permission-denied'].includes(error.code)) break;
+      }
+    }
+  } catch (error) {
+    console.error('Falha ao acessar cadastros pendentes:', error);
+  } finally { offlineSyncRunning = false; }
+}
+
+async function loadThumbnail(uid, item) {
+  const pending = await offline.pendingOne(uid,item.id).catch(() => null);
+  if (pending) return pending.thumbnail || '';
+  const cached = await offline.getThumb(uid,item.id,item.photoVersion).catch(() => '');
+  if (cached) return cached;
+  if (item.image) {
+    const thumbnail = await makeThumbnail(item.image);
+    await offline.putThumb(uid,item.id,item.photoVersion,thumbnail).catch(() => {});
+    return thumbnail;
+  }
+  if (!item.hasPhoto || !navigator.onLine) return '';
+  const snap = await withPhotoDeadline(photoRefs(uid,item.id).thumb.get({ source: 'server' }));
+  if (!snap.exists || !snap.data().image) return '';
+  const thumbnail = snap.data().image;
+  await offline.putThumb(uid,item.id,item.photoVersion,thumbnail).catch(() => {});
+  return thumbnail;
+}
+
+async function loadDetailPhoto(uid,item) {
+  const pending = await offline.pendingOne(uid,item.id).catch(() => null);
+  if (pending) return { image: pending.image || '', previewOnly: false };
+  if (item.image) return { image: item.image, previewOnly: false };
+  if (!item.hasPhoto) return { image: '', previewOnly: false };
+  if (navigator.onLine) {
+    try {
+      const snap = await withPhotoDeadline(photoRefs(uid,item.id).full.get({ source: 'server' }));
+      if (snap.exists && snap.data().image) return { image: snap.data().image, previewOnly: false };
+    } catch (_) { /* text and cached thumbnail remain available */ }
+  }
+  return { image: await offline.getThumb(uid,item.id,item.photoVersion).catch(() => ''), previewOnly: true };
+}
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [items, setItems] = useState([]);
+  const [listError, setListError] = useState('');
+  const [opening, setOpening] = useState(false);
+  const openSequence = useRef(0);
+  const [converting, setConverting] = useState(false);
+  const conversionLock = useRef(false);
+  const [conversionStatus, setConversionStatus] = useState('');
+  const conversionMode = new URLSearchParams(window.location.search).get('converterFotos') === '1';
+
+  const openDetails = async item => {
+    const sequence = ++openSequence.current;
+    setOpening(true);
+    try {
+      const result = await loadDetailPhoto(user.uid, item);
+      if (sequence === openSequence.current) setSelected({ ...item, image: result.image, _previewOnly: result.previewOnly });
+    } catch (error) {
+      if (sequence === openSequence.current) window.alert('Não foi possível abrir a foto. ' + saveErrorMessage(error));
+    } finally {
+      if (sequence === openSequence.current) setOpening(false);
+    }
+  };
+
+  const convertExistingPhotos = async () => {
+    if (conversionLock.current || !user) return;
+    if (!navigator.onLine) { setConversionStatus('A conversão precisa de conexão.'); return; }
+    const legacy = items.filter(item => item.image);
+    if (!legacy.length) { setConversionStatus('Não há fotos antigas para converter.'); return; }
+    if (!window.confirm('Converter as fotos antigas desta conta? Execute somente após ajustar as regras do Firebase e atualizar o aplicativo em todos os aparelhos.')) return;
+    if (!navigator.onLine) { setConversionStatus('Conecte-se antes de converter.'); return; }
+    conversionLock.current = true;
+    setConverting(true);
+    let completed = 0;
+    let skipped = 0;
+    try {
+      for (const item of legacy) {
+        setConversionStatus('Convertendo ' + (completed + skipped + 1) + ' de ' + legacy.length + '…');
+        if (await convertLegacyPhoto(user.uid, item)) completed++;
+        else skipped++;
+      }
+      setConversionStatus(completed + ' fotos convertidas. ' + skipped + ' registros alterados por outra sessão foram ignorados; execute novamente se necessário.');
+    } catch (error) {
+      setConversionStatus(completed + ' fotos convertidas. Processo interrompido: ' + saveErrorMessage(error) + ' As fotos restantes foram preservadas. Você pode tentar novamente.');
+    } finally {
+      conversionLock.current = false;
+      setConverting(false);
+    }
+  };
+  const [selected, setSelected] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [formType, setFormType] = useState('person');
+  const [vehicleForm, setVehicleForm] = useState({ model: '', ownerName: '', ownerId: '', alert: '' });
+  const [ownerSearching, setOwnerSearching] = useState(false);
+  const personItems = items.filter(item => item.type !== 'vehicle');
+  const ownerSuggestions = personItems.filter(item => String(item.name || '').toLocaleLowerCase('pt-BR').includes(vehicleForm.ownerName.trim().toLocaleLowerCase('pt-BR')));
+  const switchFormType = () => {
+    if (busy || editingId) return;
+    setFormType(current => current === 'person' ? 'vehicle' : 'person');
+    setFormError('');
+    setOwnerSearching(false);
+  };
+
+  const [alertSaving, setAlertSaving] = useState(false);
+  const alertLock = useRef(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null); // ← ADICIONADO
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const emptyForm = {
+    image: "",
+    name: "",
+    vulgo: "",
+    faction: "",
+    cpf: "",
+    birth: "",
+    mother: "",
+    infopem: "",
+    address: "",
+    description: ""
+  };
+
+  const [form, setForm] = useState(emptyForm);
+  const [processingImage, setProcessingImage] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [saveStatus, setSaveStatus] = useState('');
+  const savingLock = useRef(false);
+  const imageLock = useRef(false);
+  const busy = saving || processingImage;
+  const [crop, setCrop] = useState(null);
+  const cropLock = useRef(false);
+  const cropCanvas = useRef(null);
+  const detailPanel = useRef(null);
+  const detailText = useRef(null);
+  const detailClose = useRef(null);
+  const detailActions = useRef(null);
+
+  useEffect(() => {
+    if (!selected || !detailPanel.current) return;
+    const panel = detailPanel.current;
+    const updatePhotoSize = () => {
+      if (!detailText.current || !detailClose.current || !detailActions.current) return;
+      const viewportHeight = window.visualViewport?.height || window.innerHeight;
+      const contentWidth = Math.max(1, Math.min(408, window.innerWidth - 16) - 24);
+      const naturalHeight = contentWidth * 4 / 3;
+      const textHeight = detailText.current.getBoundingClientRect().height;
+      // Reserve outer margins, controls, content padding and the photo/text gap.
+      const available = viewportHeight - 16 - detailClose.current.offsetHeight - detailActions.current.offsetHeight - 12 - textHeight - 8;
+      const minimumHeight = Math.min(naturalHeight, viewportHeight * 0.48);
+      const photoHeight = Math.min(naturalHeight, Math.max(minimumHeight, available));
+      panel.style.setProperty('--detail-photo-width', (photoHeight * 3 / 4) + 'px');
+    };
+    updatePhotoSize();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updatePhotoSize) : null;
+    if (observer) {
+      observer.observe(detailText.current);
+      observer.observe(panel);
+      observer.observe(detailClose.current);
+      observer.observe(detailActions.current);
+    }
+    window.addEventListener('resize', updatePhotoSize);
+    window.visualViewport?.addEventListener('resize', updatePhotoSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updatePhotoSize);
+      window.visualViewport?.removeEventListener('resize', updatePhotoSize);
+    };
+  }, [selected]);
+  const [cropZoom, setCropZoom] = useState(1);
+  const [cropX, setCropX] = useState(50);
+  const [cropY, setCropY] = useState(50);
+
+  useEffect(() => {
+    if (!crop || !cropCanvas.current) return;
+    const canvas = cropCanvas.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const width = crop.naturalWidth;
+    const height = crop.naturalHeight;
+    const scale = Math.max(750 / width, 1000 / height) * cropZoom;
+    const sourceWidth = 750 / scale;
+    const sourceHeight = 1000 / scale;
+    const left = (width - sourceWidth) * cropX / 100;
+    const top = (height - sourceHeight) * cropY / 100;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 750, 1000);
+    ctx.drawImage(crop, left, top, sourceWidth, sourceHeight, 0, 0, 750, 1000);
+  }, [crop, cropZoom, cropX, cropY]);
+
+  const cancelCrop = () => {
+    if (imageLock.current) return;
+    setCrop(null);
+    cropLock.current = false;
+    setFormError('');
+  };
+
+  const applyCrop = async () => {
+    if (imageLock.current || !cropCanvas.current) return;
+    imageLock.current = true;
+    setProcessingImage(true);
+    setFormError('');
+    try {
+      const blob = await new Promise(resolve => cropCanvas.current.toBlob(resolve, 'image/jpeg', 0.9));
+      if (!blob) throw new Error('Não foi possível preparar a foto. Tente outra imagem.');
+      const image = await compressPhoto(blob);
+      setForm(f => ({ ...f, image }));
+      setCrop(null);
+      cropLock.current = false;
+    } catch (error) {
+      setFormError(error.message);
+    } finally {
+      imageLock.current = false;
+      setProcessingImage(false);
+    }
+  };
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const update = () => {
+      document.documentElement.style.setProperty('--viewport-height', (viewport ? viewport.height : window.innerHeight) + 'px');
+      document.documentElement.style.setProperty('--viewport-top', (viewport ? viewport.offsetTop : 0) + 'px');
+    };
+    update();
+    window.addEventListener('resize', update);
+    viewport?.addEventListener('resize', update);
+    viewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      viewport?.removeEventListener('resize', update);
+      viewport?.removeEventListener('scroll', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected && !showForm && !confirmDelete) return;
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = oldOverflow; };
+  }, [selected, showForm, confirmDelete]);
+
+  useEffect(() => auth.onAuthStateChanged(setUser), []);
+
+  useEffect(() => {
+    openSequence.current++;
+    setOpening(false);
+    setSelected(null);
+    setShowForm(false);
+    setItems([]);
+    setListError('');
+    if (!user) return;
+    let active = true;
+    let generation = 0;
+    const uid = user.uid;
+    const refresh = async () => {
+      const ownGeneration = ++generation;
+      try {
+        const [rows,pending] = await Promise.all([offline.getList(uid),offline.getPending(uid)]);
+        if (active && ownGeneration === generation) setItems(offline.merge(rows,pending));
+      } catch (_) {
+        if (active) setListError('O armazenamento local não está disponível. Não é possível cadastrar offline neste navegador.');
+      }
+    };
+    const reconnect = () => { refresh(); syncPending(uid); };
+    offlineChanges.addEventListener('change',refresh);
+    window.addEventListener('online',reconnect);
+    const visible = () => { if(document.visibilityState === 'visible') reconnect(); };
+    document.addEventListener('visibilitychange',visible);
+    const timer = setInterval(() => { if(document.visibilityState === 'visible') syncPending(uid); },15000);
+    refresh();
+    syncPending(uid);
+    const unsubscribe = db.collection('users').doc(uid).collection('items')
+      .onSnapshot({ includeMetadataChanges: true }, async snap => {
+        if (!active || snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
+        const rows = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        try {
+          await offline.putList(uid,rows);
+          if(active) { setListError(''); await refresh(); }
+        } catch (_) {
+          if(active) { setItems(rows); setListError('Sem espaço local. Libere espaço antes de cadastrar offline.'); }
+        }
+      }, error => {
+        if(active && navigator.onLine) setListError('Não foi possível atualizar os cadastros. ' + saveErrorMessage(error));
+      });
+    return () => {
+      active = false;
+      unsubscribe();
+      clearInterval(timer);
+      offlineChanges.removeEventListener('change',refresh);
+      window.removeEventListener('online',reconnect);
+      document.removeEventListener('visibilitychange',visible);
+    };
+  }, [user]);
+
+  const handleChange = async e => {
+    const { name, value, files } = e.target;
+    if (savingLock.current) return;
+    if (name !== 'image') {
+      setForm(f => ({ ...f, [name]: value }));
+      return;
+    }
+    const file = files && files[0];
+    if (!file || imageLock.current) return;
+    e.target.value = '';
+    imageLock.current = true;
+    setProcessingImage(true);
+    setFormError('');
+    try {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('Escolha uma foto JPG, PNG ou WebP.');
+      if (file.size > 20 * 1024 * 1024) throw new Error('Escolha uma foto de até 20 MB.');
+      const url = URL.createObjectURL(file);
+      let picture;
+      try {
+        picture = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Não foi possível abrir essa foto.'));
+          img.src = url;
+        });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      setCropZoom(1);
+      setCropX(50);
+      setCropY(50);
+      cropLock.current = true;
+      setCrop(picture);
+    } catch (error) {
+      setFormError(error.message + ' A foto anterior, se houver, foi mantida.');
+    } finally {
+      imageLock.current = false;
+      setProcessingImage(false);
+    }
+  };
+
+  const saveItem = async () => {
+    if (savingLock.current || imageLock.current) return;
+    if (cropLock.current) { setFormError('Confirme ou cancele o ajuste da foto antes de salvar.'); return; }
+    setFormError('');
+    if (!user) { setFormError('Entre novamente para salvar.'); return; }
+    if (editingId && !navigator.onLine) { setFormError('Edições precisam de conexão.'); return; }
+    if (formType === 'vehicle' && !vehicleForm.model.trim()) { setFormError('Informe o modelo do veículo.'); return; }
+    if (formType === 'vehicle' && vehicleForm.ownerId && !personItems.some(p => p.id === vehicleForm.ownerId)) { setFormError('O proprietário selecionado não está mais cadastrado. Selecione novamente.'); return; }
+    const payload = formType === 'vehicle'
+      ? { type: 'vehicle', name: vehicleForm.model.trim(), model: vehicleForm.model.trim(), ownerName: vehicleForm.ownerName.trim(), ownerId: vehicleForm.ownerId || '', alert: vehicleForm.alert.trim(), description: form.description, image: form.image }
+      : Object.fromEntries(Object.keys(emptyForm).map(key => [key, String(form[key] ?? '')]));
+    // Conservative ceiling leaves room for Firestore document metadata.
+    if (new TextEncoder().encode(JSON.stringify(payload)).length > 700 * 1024) {
+      setFormError('O cadastro está muito grande. Escolha novamente a foto para reduzi-la ou diminua os textos.');
+      return;
+    }
+    savingLock.current = true;
+    setSaving(true);
+    setSaveStatus('Salvando e aguardando confirmação do servidor…');
+    const reminder = setTimeout(() => {
+      setSaveStatus('O servidor ainda não confirmou. Verifique a conexão e mantenha esta tela aberta. Não é necessário clicar novamente.');
+    }, 15000);
+    try {
+      const ref = db.collection('users').doc(user.uid).collection('items');
+      if (!editingId) {
+        const uid = user.uid;
+        const id = ref.doc().id;
+        const image = payload.image;
+        const thumbnail = image ? await makeThumbnail(image) : '';
+        delete payload.image;
+        payload.hasPhoto = !!image;
+        payload.photoVersion = image ? crypto.randomUUID() : '';
+        await offline.enqueue(uid,id,payload,image,thumbnail);
+        // Completion here means the local transaction committed, never just a
+        // fire-and-forget write. The card stays pending until server confirmation.
+        announceOfflineChange();
+        navigator.storage?.persist?.().catch(() => {});
+        setForm(emptyForm);
+        setEditingId(null);
+        setShowForm(false);
+        setSelected(null);
+        syncPending(uid);
+        return;
+      }
+      const target = editingId ? ref.doc(editingId) : ref.doc();
+      const refs = photoRefs(user.uid, target.id);
+      const image = payload.image;
+      delete payload.image;
+      const batch = db.batch();
+      if (image) {
+        const thumbnail = await makeThumbnail(image);
+        const version = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+        batch.set(refs.full, { image, version });
+        batch.set(refs.thumb, { image: thumbnail, version });
+        payload.hasPhoto = true;
+        payload.photoVersion = version;
+      } else {
+        payload.hasPhoto = false;
+        payload.photoVersion = '';
+      }
+      if (editingId) batch.update(target, { ...payload, image: firebase.firestore.FieldValue.delete() });
+      else batch.set(target, payload);
+      await batch.commit();
+      setForm(emptyForm);
+      setEditingId(null);
+      setShowForm(false);
+      setSelected(null);
+    } catch (error) {
+      setFormError(saveErrorMessage(error));
+    } finally {
+      clearTimeout(reminder);
+      savingLock.current = false;
+      setSaving(false);
+      setSaveStatus('');
+    }
+  };
+
+  const toggleGeneralAlert = async () => {
+    if (alertLock.current || !selected || !user) return;
+    if (selected._pending || !navigator.onLine) { window.alert('Aguarde a sincronização e conecte-se para alterar o alerta.'); return; }
+    const targetId = selected.id;
+    const nextValue = selected.alertaGeral !== true;
+    if (!window.confirm(nextValue ? 'Ativar o alerta geral deste cadastro?' : 'Retirar o alerta geral deste cadastro?')) return;
+    if (!navigator.onLine) {
+      window.alert('Sem conexão. Conecte-se para alterar o alerta.');
+      return;
+    }
+    alertLock.current = true;
+    setAlertSaving(true);
+    try {
+      await db.collection('users').doc(user.uid).collection('items').doc(targetId).update({ alertaGeral: nextValue });
+      setSelected(current => current && current.id === targetId ? { ...current, alertaGeral: nextValue } : current);
+    } catch (error) {
+      window.alert('Não foi possível alterar o alerta geral. ' + saveErrorMessage(error));
+    } finally {
+      alertLock.current = false;
+      setAlertSaving(false);
+    }
+  };
+
+  const deleteItem = async () => {
+    if (!user || !confirmDeleteId) return;
+    if (!navigator.onLine || items.find(item => item.id === confirmDeleteId)?._pending) { window.alert('A exclusão precisa de conexão e de um cadastro sincronizado.'); return; }
+    try {
+      const refs = photoRefs(user.uid, confirmDeleteId);
+      const batch = db.batch();
+      batch.delete(refs.full);
+      batch.delete(refs.thumb);
+      batch.delete(refs.item);
+      await batch.commit();
+      setConfirmDelete(false);
+      setConfirmDeleteId(null);
+      setSelected(null);
+    } catch (error) {
+      window.alert('Não foi possível excluir o cadastro. ' + saveErrorMessage(error));
+    }
+  };
+
+  const filtered = items
+    .filter(i =>
+      [i.name, i.vulgo, i.faction, i.ownerName]
+        .some(v => v?.toLowerCase().includes(search.toLowerCase()))
+    )
+    .sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''),"pt-BR",{sensitivity:"base"}));
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <h1 className="text-3xl font-bold">ZEBROL</h1>
+        <input className="bg-gray-800 p-2 rounded w-64" placeholder="Email" onChange={e=>setEmail(e.target.value)} />
+        <input type="password" className="bg-gray-800 p-2 rounded w-64" placeholder="Senha" onChange={e=>setPassword(e.target.value)} />
+        <button onClick={()=>auth.signInWithEmailAndPassword(email,password)} className="bg-blue-600 px-4 py-2 rounded">
+          Entrar
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen p-6 space-y-6">
+      <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
+
+      {listError && <p role="alert" className="text-red-300 text-center">{listError}</p>}
+      {opening && <p role="status" className="text-gray-400 text-center">Carregando foto…</p>}
+      {conversionMode && <div className="max-w-md mx-auto space-y-2">
+        <button onClick={convertExistingPhotos} disabled={converting} className="bg-blue-600 p-2 rounded disabled:opacity-50">{converting ? 'Convertendo…' : 'Converter fotos antigas'}</button>
+        <p role="status">{conversionStatus}</p>
+      </div>}
+
+      {searchOpen && (
+        <input
+          className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+          placeholder="Pesquisar nome, vulgo ou facção"
+          value={search}
+          onChange={e=>setSearch(e.target.value)}
+        />
+      )}
+
+      <section aria-labelledby="alerta-geral-heading" className="max-w-md mx-auto space-y-4">
+        <h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2>
+        {!items.some(item => item.alertaGeral === true) ? (
+          <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>
+        ) : (
+      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
+        {filtered.filter(item => item.alertaGeral === true).map(item=>(
+          <div
+            key={item.id}
+            onClick={()=>openDetails(item)}
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative" style={item._pending ? { paddingBottom: 20 } : undefined}
+          >
+            <LazyThumbnail uid={user.uid} item={item} />
+            <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
+            {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); if(item._pendingError) window.alert(item._pendingError); if(navigator.onLine) syncPending(user.uid); }}>!</button>}
+          </div>
+        ))}
+      </div>
+        )}
+      </section>
+
+      <section aria-labelledby="todos-heading" className="max-w-md mx-auto space-y-4">
+        <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS</h2>
+      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
+        {filtered.filter(item => item.alertaGeral !== true).map(item=>(
+          <div
+            key={item.id}
+            onClick={()=>openDetails(item)}
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative" style={item._pending ? { paddingBottom: 20 } : undefined}
+          >
+            <LazyThumbnail uid={user.uid} item={item} />
+            <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
+            {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); if(item._pendingError) window.alert(item._pendingError); if(navigator.onLine) syncPending(user.uid); }}>!</button>}
+          </div>
+        ))}
+      </div>
+      </section>
+
+      {selected && (
+        <div className="mobile-overlay detail-overlay bg-black bg-opacity-70">
+          <div role="dialog" aria-modal="true" aria-label="Detalhes do cadastro" ref={detailPanel} className="mobile-panel detail-panel bg-gray-900 rounded">
+          <div ref={detailClose} className="detail-close"><button onClick={() => setSelected(null)} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
+          <div className="mobile-scroll detail-content">
+            <div className="detail-photo-wrap">
+            
+
+            {selected.image && (
+              <img src={selected.image} alt="Foto do cadastro" className="mobile-photo rounded mb-3" />
+            )}
+
+            </div>
+            <div ref={detailText} className="detail-text space-y-1">
+            {selected.type === 'vehicle' ? <>
+              <p><b>Modelo:</b> {selected.model || selected.name}</p>
+              <p className="whitespace-pre-wrap"><b>Alerta:</b> {selected.alert || 'Não informado'}</p>
+              <p><b>Proprietário:</b> {personItems.some(p => p.id === selected.ownerId) ? (
+                <button type="button" className="text-blue-400 underline break-words text-left" style={{ minHeight: 'auto', padding: 0 }} onClick={() => {
+                  const owner = personItems.find(p => p.id === selected.ownerId);
+                  if (owner) openDetails(owner);
+                }}>{personItems.find(p => p.id === selected.ownerId).name}</button>
+              ) : (selected.ownerName || 'Não informado')}</p>
+            </> : <>
+            <p><b>Nome:</b> {selected.name}</p>
+            <p><b>Vulgo:</b> {selected.vulgo}</p>
+            <p><b>Facção:</b> {selected.faction}</p>
+            <p><b>CPF:</b> {selected.cpf}</p>
+            <p><b>Nasc:</b> {selected.birth}</p>
+            <p><b>Mãe:</b> {selected.mother}</p>
+            <p><b>Infopem:</b> {selected.infopem}</p>
+            <p><b>Endereço:</b> {selected.address}</p>
+            </>}
+            <p className="whitespace-pre-wrap"><b>Descrição:</b> {selected.description}</p>
+            {selected.type !== 'vehicle' && <div className="pt-3 space-y-2">
+              <p className="font-semibold">Veículos</p>
+              {!items.some(v => v.type === 'vehicle' && v.ownerId === selected.id) && <p className="text-sm text-gray-400">Nenhum veículo vinculado.</p>}
+              {items.filter(v => v.type === 'vehicle' && v.ownerId === selected.id).map(v => <button key={v.id} onClick={() => openDetails(v)} className="block w-full text-left bg-gray-800 p-2 rounded break-words">🏍️ {v.model || v.name}{v.alertaGeral === true ? ' · Alerta ativo' : ''}</button>)}
+            </div>}
+            </div>
+          </div>
+          <div ref={detailActions} className="mobile-actions">
+
+            <button
+              onClick={() => {
+                if (!navigator.onLine || selected._pending) { window.alert('A edição precisa de conexão e de um cadastro sincronizado.'); return; }
+                if (selected._previewOnly) { window.alert('Abra novamente o cadastro com conexão para carregar a foto antes de editar.'); return; }
+                setForm(Object.fromEntries(Object.keys(emptyForm).map(key => [key, selected[key] ?? ''])));
+                setFormType(selected.type === 'vehicle' ? 'vehicle' : 'person');
+                setVehicleForm({ model: selected.model || '', ownerName: selected.ownerName || '', ownerId: selected.ownerId || '', alert: selected.alert || '' });
+                setOwnerSearching(false);
+                setFormError('');
+                setEditingId(selected.id);
+                setShowForm(true);
+                setSelected(null);
+              }}
+              aria-label="Editar cadastro" className="px-3 text-blue-400 text-2xl"
+            >
+              ✏️
+            </button>
+
+            <button
+              onClick={toggleGeneralAlert}
+              disabled={alertSaving}
+              aria-label={selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
+              aria-pressed={selected.alertaGeral === true}
+              title={alertSaving ? 'Atualizando alerta…' : selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
+              className="px-3 text-2xl disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ color: selected.alertaGeral === true ? '#ef4444' : '#9ca3af' }}
+            >
+              <span aria-hidden="true" style={{ display: 'inline-block', filter: selected.alertaGeral === true ? 'brightness(0) saturate(100%) invert(36%) sepia(90%) saturate(1600%) hue-rotate(335deg) brightness(103%) contrast(90%)' : 'grayscale(1)' }}>💀</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setConfirmDeleteId(selected.id); // ← AJUSTADO
+                setConfirmDelete(true);
+              }}
+              aria-label="Excluir cadastro" className="px-3 text-red-400 text-2xl"
+            >
+              🗑️
+            </button>
+
+          </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="mobile-overlay bg-black bg-opacity-80" style={{ zIndex: 80 }}>
+          <div className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full max-h-full overflow-y-auto space-y-4 text-center">
+            <p className="text-lg font-semibold">
+              Tem certeza que deseja excluir?
+            </p>
+            <div className="flex gap-4">
+              <button
+                onClick={deleteItem}
+                className="flex-1 bg-red-600 p-2 rounded-xl"
+              >
+                Sim
+              </button>
+              <button
+                onClick={() => {
+                  setConfirmDelete(false);
+                  setConfirmDeleteId(null);
+                }}
+                className="flex-1 bg-gray-700 p-2 rounded-xl"
+              >
+                Não
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!selected && !showForm && (
+        <>
+          <button
+  onClick={()=>setSearchOpen(!searchOpen)}
+  className="fixed bottom-6 left-6 text-2xl z-50">
+  🔍
+</button>
+         <button
+  onClick={()=>{
+    setForm(emptyForm);
+    setFormType('person');
+    setVehicleForm({ model: '', ownerName: '', ownerId: '', alert: '' });
+    setOwnerSearching(false);
+    setFormError('');
+    setEditingId(null);
+    setShowForm(true);
+  }}
+  className="fixed bottom-6 right-6 text-4xl font-bold text-blue-500 z-40 cursor-pointer"
+>
+  +
+</button>
+
+
+        </>
+      )}
+
+      {showForm && (
+        <div className="mobile-overlay bg-black bg-opacity-70">
+          <div role="dialog" aria-modal="true" aria-label="Formulário do cadastro" className="mobile-panel mobile-form bg-gray-900 rounded max-w-sm">
+            <div className="mobile-header"><h2 className="font-semibold">{formType === 'vehicle' ? (editingId ? 'Editar veículo' : 'Cadastrar veículo') : (editingId ? 'Editar pessoa' : 'Cadastrar pessoa')}</h2>
+              {!editingId && <button type="button" disabled={busy || !!crop} onClick={switchFormType} className="text-2xl px-2 disabled:opacity-50" aria-label={formType === 'vehicle' ? 'Cadastrar pessoa' : 'Cadastrar veículo'} title={formType === 'vehicle' ? 'Cadastrar pessoa' : 'Cadastrar veículo'}>{formType === 'vehicle' ? '👤' : '🏍️'}</button>}
+            </div>
+            <div className="mobile-scroll p-4 space-y-2">
+            <fieldset disabled={busy} className="space-y-2 disabled:opacity-70">
+            <input type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={handleChange} aria-label="Foto do cadastro" />
+            {crop && (
+              <div className="space-y-3 py-2">
+                <p className="text-sm">Ajuste o enquadramento da foto:</p>
+                <canvas ref={cropCanvas} width="750" height="1000" aria-label="Prévia do recorte da foto" className="block w-full max-w-[225px] mx-auto rounded" style={{ aspectRatio: '3 / 4' }} />
+                <label className="block text-sm">Zoom
+                  <input aria-label="Zoom da foto" className="block w-full" type="range" min="1" max="4" step="0.01" value={cropZoom} onChange={e => setCropZoom(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição horizontal
+                  <input aria-label="Posição horizontal da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropX} onChange={e => setCropX(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição vertical
+                  <input aria-label="Posição vertical da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropY} onChange={e => setCropY(Number(e.target.value))} />
+                </label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={applyCrop} className="flex-1 bg-blue-600 p-2 rounded">Usar este recorte</button>
+                  <button type="button" onClick={cancelCrop} className="flex-1 bg-gray-700 p-2 rounded">Cancelar ajuste</button>
+                </div>
+              </div>
+            )}
+            {!crop && form.image && <img src={form.image} alt="Prévia da foto do cadastro" className="max-h-40 mx-auto rounded object-contain" />}
+            {processingImage && <p role="status">Reduzindo a foto…</p>}
+            {formError && <p role="alert" className="text-red-300 text-sm break-words">{formError}</p>}
+            {saving && <p role="status" className="text-blue-200 text-sm">{saveStatus}</p>}
+
+            {formType === 'vehicle' ? <>
+              <label className="block text-sm">Modelo
+                <input className="w-full bg-gray-800 p-2 rounded" maxLength={120} value={vehicleForm.model} onChange={e => setVehicleForm(v => ({ ...v, model: e.target.value }))} placeholder="Modelo do veículo" />
+              </label>
+              <label className="block text-sm">Alerta
+                <input className="w-full bg-gray-800 p-2 rounded" maxLength={500} value={vehicleForm.alert} onChange={e => setVehicleForm(v => ({ ...v, alert: e.target.value }))} placeholder="Digite o alerta do veículo" />
+              </label>
+              <label className="block text-sm">Proprietário
+                <input className="w-full bg-gray-800 p-2 rounded" autoComplete="off" maxLength={120} value={vehicleForm.ownerName} onChange={e => { setVehicleForm(v => ({ ...v, ownerName: e.target.value, ownerId: '' })); setOwnerSearching(true); }} placeholder="Digite o nome e selecione a pessoa" />
+              </label>
+              {ownerSearching && vehicleForm.ownerName.trim() && <div className="max-h-40 overflow-y-auto bg-gray-800 rounded">
+                {ownerSuggestions.map(p => <button type="button" key={p.id} className="block w-full text-left p-2 border-b border-gray-700" onClick={() => { setVehicleForm(v => ({ ...v, ownerName: p.name, ownerId: p.id })); setOwnerSearching(false); }}>
+                  <span>{p.name}</span><span className="block text-xs text-gray-400">{[p.vulgo, p.birth, p.mother].filter(Boolean).join(' · ') || 'Sem informações complementares'}</span>
+                </button>)}
+                {!ownerSuggestions.length && <p className="p-2 text-sm text-gray-400">Nenhuma pessoa encontrada.</p>}
+              </div>}
+              <p className="text-xs text-gray-400">{vehicleForm.ownerId ? 'Proprietário vinculado ao cadastro selecionado.' : 'Sem seleção, o nome será salvo sem vínculo.'}</p>
+            </> : <>
+            <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange} />
+
+            <input className="w-full bg-gray-800 p-2 rounded" name="birth" placeholder="Data de nascimento" value={form.birth} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="infopem" placeholder="Infopem" value={form.infopem} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
+            </>}
+            <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
+
+            <button onClick={saveItem} disabled={busy || !!crop} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50 disabled:cursor-not-allowed">{processingImage ? "Processando foto…" : saving ? "Salvando…" : "Salvar"}</button>
+            <button disabled={busy} onClick={()=>{ setShowForm(false); setEditingId(null); setFormError(''); setCrop(null); cropLock.current = false; }} className="w-full bg-gray-700 p-2 rounded disabled:opacity-50">Cancelar</button>
+            </fieldset>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
+# Zebrol — pacote offline
+
+## O que foi preparado
+
+- Abrir o aplicativo sem conexão após o primeiro carregamento completo online.
+- Pesquisar os textos das pessoas e veículos já carregados por esta conta.
+- Guardar miniaturas conforme elas aparecem, com limpeza das mais antigas ao atingir aproximadamente 20 MiB de conteúdo de miniaturas. O cálculo usa dois bytes por caractere para ser conservador; o navegador também usa espaço interno adicional.
+- Usar a miniatura ao abrir um cadastro sem sinal; fotos maiores são buscadas online e não são gravadas no banco local de consulta.
+- Criar pessoas e veículos offline, incluindo a foto comprimida e o vínculo ao proprietário.
+- Mostrar apenas um “!” vermelho no canto inferior direito do card pendente. O símbolo some quando o servidor confirma o cadastro e suas fotos na mesma transação.
+- Retomar tentativas automaticamente com o aplicativo aberto, ao recuperar conexão, ao voltar para o aplicativo e periodicamente enquanto estiver visível.
+
+Fotos de cadastros pendentes são uma exceção: ficam guardadas até a confirmação do envio e não são removidas pela limpeza das miniaturas. Depois da confirmação, a foto grande sai da fila local; a miniatura pode permanecer no cache.
+
+Não foi implementado envio com o aplicativo totalmente fechado. Nessa situação, o envio retoma quando você abre o app com conexão. Edição, exclusão, conversão de fotos antigas e alteração de alerta geral precisam de conexão. Cadastros pendentes aguardam sincronização antes de serem editados ou excluídos.
+
+## Como publicar
+
+Este pacote precisa de TODOS os arquivos; não basta copiar o HTML.
+
+1. Guarde uma cópia dos arquivos atuais do repositório.
+2. Coloque o conteúdo desta pasta na mesma pasta publicada pela Vercel, mantendo a estrutura abaixo. O `index.html` substitui a página principal.
+3. Preserve configurações já existentes da Vercel e os demais arquivos do projeto. Nenhuma configuração de hospedagem foi alterada neste pacote.
+4. Aguarde a publicação e abra o endereço HTTPS definitivo, sempre no mesmo navegador ou instalação. Endereços de prévia, arquivo local e domínio definitivo têm armazenamentos diferentes.
+5. Entre com sua conta ainda online, aguarde o carregamento e role a lista para guardar as miniaturas desejadas. Espere terminar o carregamento da página antes de fechar.
+
+Estrutura:
+
+```
+index.html
+offline-store.js
+offline-register.js
+sw.js
+manifest.webmanifest
+icon-192.png
+icon-512.png
+vendor/
+  react.js
+  react-dom.js
+  babel.js
+  tailwind.js
+  firebase-app.js
+  firebase-auth.js
+  firebase-firestore.js
+```
+
+As bibliotecas foram incluídas localmente para a abertura offline. O aplicativo continua usando React, Babel e Tailwind no navegador; não foi feita a conversão para uma compilação de produção. Os arquivos básicos ocupam aproximadamente 5 MB descompactados, além de textos, miniaturas, informações internas do navegador e fotos pendentes. Portanto, 20 MiB não é um limite total do aplicativo.
+
+As regras de Firebase anteriormente usadas para `/users/{uid}/items/{id}` e suas fotos continuam sendo utilizadas. O pacote não altera regras, permissões, contas nem cria acesso compartilhado. Não foi executada nenhuma gravação no seu banco durante a preparação.
+
+## Teste antes de distribuir
+
+1. Abra o site publicado online e entre na conta. Veja algumas miniaturas.
+2. Ative modo avião, feche o app e abra novamente pelo mesmo endereço ou ícone. Confirme a lista e a pesquisa.
+3. Abra um cadastro cuja miniatura foi exibida. Sem internet, deve usar essa miniatura. Fotos não carregadas podem ficar vazias, mas os textos devem continuar acessíveis.
+4. Cadastre uma pessoa fictícia com foto. O formulário deve fechar e o card deve mostrar “!” vermelho.
+5. Feche e reabra ainda offline. Confirme que o cadastro e a foto pendente continuam disponíveis.
+6. Cadastre um veículo fictício e selecione essa pessoa como proprietária. Confira o vínculo nos detalhes dela.
+7. Restabeleça a conexão e mantenha o app aberto. O “!” só deve desaparecer após a confirmação do servidor. Dependendo da ordem de envio, o veículo pode precisar de uma tentativa adicional após o proprietário.
+8. Reabra e confira os dois registros. Se possível, confira também em outro aparelho online com a mesma conta, para confirmar que não há duplicações.
+9. Se o “!” permanecer, toque nele para consultar o erro e tentar novamente quando online.
+
+## Cuidados com dados locais
+
+É necessário ter entrado nessa conta online anteriormente. Não há autenticação nova offline. As cópias locais são separadas por conta, mas o aparelho deve ser tratado como contendo dados dos cadastros.
+
+Limpar dados do site, usar navegação privada, trocar de domínio/navegador ou a remoção de armazenamento pelo sistema pode impedir a consulta offline ou apagar registros que não foram enviados. O app solicita armazenamento persistente quando possível, mas o navegador não é obrigado a concedê-lo. Falhas de espaço são mostradas sem fechar o formulário nem declarar sucesso.
+
+Não exclua dados locais nem volte à versão antiga enquanto existirem cards com “!”. A versão antiga não sabe ler a fila offline. Uma cópia offline também não recebe exclusões ou mudanças feitas por outras pessoas até se reconectar.
+
+## Atualizações posteriores
+
+O service worker usa um pacote versionado para não misturar arquivos de versões diferentes. Em uma atualização futura dos arquivos do app, altere também a versão da constante `CACHE` em `sw.js` (por exemplo, de `zebrol-shell-offline-v1` para `zebrol-shell-offline-v2`) e publique o conjunto completo. Feche todas as abas/janelas do app e reabra online para ativar a atualização. O banco local e a fila são preservados entre versões; não renomeie esse banco sem migração.
+
+## Verificações feitas
+
+Passaram a compilação do JSX e os testes automatizados de armazenamento local, retomada após nova conexão ao banco, isolamento por conta, falha de gravação, limite de miniaturas, pendências protegidas, confirmação tardia, envio repetido sem duplicar, vínculo pessoa/veículo e seleção dos arquivos guardados pelo service worker.
+
+Esses testes usam IndexedDB simulado e Firebase simulado. Ainda falta testar a abertura offline, a apresentação no celular e a sincronização contra o Firebase real no domínio publicado. Nada foi publicado automaticamente.
+
+{
+  "id": "./",
+  "name": "ZEBROL",
+  "short_name": "ZEBROL",
+  "lang": "pt-BR",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
+
+(function () {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext || location.protocol === 'file:') {
+    window.addEventListener('load', () => window.alert('A abertura offline precisa do endereço HTTPS publicado. O arquivo local não prepara esse recurso.'));
+    return;
+  }
+  window.addEventListener('load', async () => {
+    try {
+      const registration = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
+      if (registration.installing) {
+        registration.installing.addEventListener('statechange', function () {
+          if(this.state === 'redundant' && !registration.active) window.alert('Não foi possível preparar a abertura offline. Abra novamente com conexão.');
+        });
+      }
+    } catch (_) {
+      window.alert('Não foi possível preparar a abertura offline. Abra novamente com conexão.');
+    }
+  });
+})();
+
+/* Local data is partitioned by the authenticated Firebase UID. */
+(function (root) {
+  'use strict';
+  const THUMB_LIMIT = 20 * 1024 * 1024;
+  let database;
+  function open() {
+    if (!database) database = new Promise((resolve, reject) => {
+      const request = indexedDB.open('zebrol-offline-v1', 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        db.createObjectStore('lists', { keyPath: 'uid' });
+        db.createObjectStore('pending', { keyPath: 'key' }).createIndex('uid', 'uid');
+        db.createObjectStore('thumbs', { keyPath: 'key' });
+      };
+      request.onsuccess = () => { request.result.onversionchange = () => request.result.close(); resolve(request.result); };
+      request.onerror = () => { database = null; reject(request.error); };
+      request.onblocked = () => { database = null; reject(new Error('Feche as outras abas do Zebrol e tente novamente.')); };
+    });
+    return database;
+  }
+  async function transact(stores, mode, operation) {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(stores, mode);
+      let result;
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('Não foi possível guardar os dados.'));
+      try { operation(tx, value => { result = value; }); }
+      catch (error) { tx.abort(); reject(error); }
+    });
+  }
+  function clean(item) {
+    const result = { ...item };
+    delete result.image;
+    delete result._pending;
+    delete result._pendingError;
+    delete result._previewOnly;
+    delete result._creationToken;
+    return result;
+  }
+  const keyFor = (uid, id) => uid + ':' + id;
+  const thumbKey = (uid, id, version) => keyFor(uid, id) + ':' + (version || 'legacy');
+  function getList(uid) {
+    return transact(['lists'], 'readonly', (tx, done) => {
+      tx.objectStore('lists').get(uid).onsuccess = e => done(e.target.result?.items || []);
+    });
+  }
+  function putList(uid, items) {
+    return transact(['lists'], 'readwrite', tx => tx.objectStore('lists').put({ uid, items: items.map(clean) }));
+  }
+  function getPending(uid) {
+    return transact(['pending'], 'readonly', (tx, done) => {
+      tx.objectStore('pending').index('uid').getAll(uid).onsuccess = e => done(e.target.result.sort((a,b) => a.created - b.created));
+    });
+  }
+  function pendingOne(uid, id) {
+    return transact(['pending'], 'readonly', (tx, done) => {
+      tx.objectStore('pending').get(keyFor(uid,id)).onsuccess = e => done(e.target.result || null);
+    });
+  }
+  async function enqueue(uid, id, item, image, thumbnail) {
+    const entry = { key: keyFor(uid,id), uid, id, item: clean(item), image, thumbnail, created: Date.now(), token: crypto.randomUUID(), error: '' };
+    await transact(['pending'], 'readwrite', tx => tx.objectStore('pending').add(entry));
+    return entry;
+  }
+  function setPendingError(uid, id, message) {
+    return transact(['pending'], 'readwrite', tx => {
+      const store = tx.objectStore('pending');
+      store.get(keyFor(uid,id)).onsuccess = e => { if(e.target.result) store.put({ ...e.target.result, error: message }); };
+    });
+  }
+  // The outbox is removed only after a successful server commit; promote text
+  // into the local list in the same local transaction for restart safety.
+  function confirm(entry) {
+    return transact(['pending','lists'], 'readwrite', tx => {
+      const lists = tx.objectStore('lists');
+      lists.get(entry.uid).onsuccess = e => {
+        const rows = e.target.result?.items || [];
+        if (!rows.some(row => row.id === entry.id)) rows.push({ ...entry.item, id: entry.id });
+        lists.put({ uid: entry.uid, items: rows });
+        tx.objectStore('pending').delete(entry.key);
+      };
+    });
+  }
+  function merge(items, pending) {
+    const rows = new Map(items.map(item => [item.id, item]));
+    pending.forEach(entry => rows.set(entry.id, { ...entry.item, id: entry.id, _pending: true, _pendingError: entry.error }));
+    return [...rows.values()];
+  }
+  function getThumb(uid, id, version) {
+    return transact(['thumbs'], 'readwrite', (tx, done) => {
+      const store = tx.objectStore('thumbs');
+      store.get(thumbKey(uid,id,version)).onsuccess = e => {
+        const value = e.target.result;
+        if(value) { value.touched = Date.now(); store.put(value); }
+        done(value?.image || '');
+      };
+    });
+  }
+  function putThumb(uid,id,version,image) {
+    if (!image || image.length * 2 > THUMB_LIMIT) return Promise.resolve();
+    return transact(['thumbs'], 'readwrite', tx => {
+      const store = tx.objectStore('thumbs');
+      const entry = { key: thumbKey(uid,id,version), ownerKey: keyFor(uid,id), image, bytes: image.length * 2, touched: Date.now() };
+      store.getAll().onsuccess = e => {
+        // Remove obsolete versions first. Never touch the independent outbox.
+        const rows = e.target.result.filter(row => {
+          if(row.ownerKey === entry.ownerKey) { store.delete(row.key); return false; }
+          return true;
+        }).sort((a,b) => a.touched - b.touched);
+        let total = rows.reduce((sum,row) => sum + row.bytes, entry.bytes);
+        for(const row of rows) { if(total <= THUMB_LIMIT) break; store.delete(row.key); total -= row.bytes; }
+        store.put(entry);
+      };
+    });
+  }
+  root.ZebrolOffline = { open, getList, putList, getPending, pendingOne, enqueue, confirm, setPendingError, merge, getThumb, putThumb, clean, THUMB_LIMIT };
+})(typeof window !== 'undefined' ? window : globalThis);
