@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ZEBROL</title>
 
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="vendor/tailwind.js"></script>
+  <script crossorigin src="vendor/react.js"></script>
+  <script crossorigin src="vendor/react-dom.js"></script>
+  <script src="vendor/babel.js"></script>
 
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="vendor/firebase-app.js"></script>
+  <script src="vendor/firebase-auth.js"></script>
+  <script src="vendor/firebase-firestore.js"></script>
 <style>
   .mobile-overlay { position: fixed; top: var(--viewport-top, 0px); left: 0; right: 0; height: var(--viewport-height, 100dvh); padding: 12px; display: flex; align-items: center; justify-content: center; overflow: hidden; z-index: 60; }
   .mobile-panel { width: 100%; max-height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; overflow-wrap: anywhere; }
@@ -37,6 +37,11 @@
   .detail-panel > .detail-close button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; line-height: 1; }
   .detail-text { margin-top: 8px; padding: 0 6px; }
 </style>
+<meta name="theme-color" content="#000000" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<script src="offline-store.js"></script>
+<script src="offline-register.js" defer></script>
 </head>
 
 <body class="bg-black text-white">
@@ -165,6 +170,11 @@ function LazyThumbnail({ uid, item }) {
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
+    const online = () => setRetry(n => n + 1);
+    window.addEventListener('online',online);
+    return () => window.removeEventListener('online',online);
+  }, []);
+  useEffect(() => {
     if (!host.current) return;
     if (!window.IntersectionObserver) { setVisible(true); return; }
     const observer = new IntersectionObserver(entries => {
@@ -181,21 +191,110 @@ function LazyThumbnail({ uid, item }) {
     setImage('');
     setFailed(false);
     if (!visible) return;
-    if (item.image) { setImage(item.image); return; }
-    if (!item.hasPhoto) return;
-    photoRefs(uid, item.id).thumb.get().then(snap => {
-      if (!active) return;
-      if (!snap.exists || !snap.data().image) throw new Error('Miniatura indisponível');
-      setImage(snap.data().image);
-    }).catch(() => { if (active) setFailed(true); });
+    loadThumbnail(uid,item).then(thumbnail => {
+      if(active) setImage(thumbnail);
+    }).catch(() => { if(active) setFailed(navigator.onLine); });
     return () => { active = false; };
-  }, [uid, item.id, item.image, item.hasPhoto, item.photoVersion, visible, retry]);
+  }, [uid, item.id, item.image, item.hasPhoto, item.photoVersion, item._pending, visible, retry]);
   return <div ref={host} className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
     {image && <img src={image} alt={item.name || 'Foto do cadastro'} loading="lazy" decoding="async" className="w-full h-full object-cover" />}
     {failed && <button className="w-full h-full text-sm" onClick={e => { e.stopPropagation(); setRetry(n => n + 1); }}>Recarregar foto</button>}
   </div>;
 }
 
+
+const offline = window.ZebrolOffline;
+let offlineSyncRunning = false;
+const offlineChanges = new EventTarget();
+const offlineChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('zebrol-pending-v1') : null;
+function announceOfflineChange() {
+  offlineChanges.dispatchEvent(new Event('change'));
+  offlineChannel?.postMessage('change');
+}
+if (offlineChannel) offlineChannel.onmessage = () => offlineChanges.dispatchEvent(new Event('change'));
+
+async function withPhotoDeadline(promise) {
+  let timer;
+  try {
+    return await Promise.race([promise,new Promise((_,reject) => {
+      timer = setTimeout(() => reject(new Error('Foto indisponível no momento.')),3500);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+async function syncPending(uid) {
+  if (offlineSyncRunning || !navigator.onLine || auth.currentUser?.uid !== uid) return;
+  offlineSyncRunning = true;
+  try {
+    const entries = await offline.getPending(uid);
+    for (const entry of entries) {
+      if (!navigator.onLine || auth.currentUser?.uid !== uid) break;
+      try {
+        const refs = photoRefs(uid, entry.id);
+        // Stable document ID + token make retries safe after a lost acknowledgement
+        // or simultaneous sends by two browser tabs.
+        await db.runTransaction(async tx => {
+          const existing = await tx.get(refs.item);
+          if (existing.exists) {
+            if (existing.data()._creationToken !== entry.token) throw new Error('Conflito de cadastro. O envio permanece pendente.');
+            return;
+          }
+          if (entry.item.ownerId) {
+            const owner = await tx.get(photoRefs(uid, entry.item.ownerId).item);
+            if (!owner.exists || owner.data().type === 'vehicle') throw new Error('O proprietário ainda não está disponível. O veículo permanece pendente.');
+          }
+          tx.set(refs.item, { ...entry.item, _creationToken: entry.token });
+          if (entry.image) {
+            tx.set(refs.full, { image: entry.image, version: entry.item.photoVersion });
+            tx.set(refs.thumb, { image: entry.thumbnail, version: entry.item.photoVersion });
+          }
+        });
+        // Thumbnail caching is optional and must not prevent acknowledgement.
+        await offline.putThumb(uid,entry.id,entry.item.photoVersion,entry.thumbnail).catch(() => {});
+        await offline.confirm(entry);
+        announceOfflineChange();
+      } catch (error) {
+        await offline.setPendingError(uid,entry.id,saveErrorMessage(error));
+        announceOfflineChange();
+        if (!navigator.onLine || ['unavailable','unauthenticated','permission-denied'].includes(error.code)) break;
+      }
+    }
+  } catch (error) {
+    console.error('Falha ao acessar cadastros pendentes:', error);
+  } finally { offlineSyncRunning = false; }
+}
+
+async function loadThumbnail(uid, item) {
+  const pending = await offline.pendingOne(uid,item.id).catch(() => null);
+  if (pending) return pending.thumbnail || '';
+  const cached = await offline.getThumb(uid,item.id,item.photoVersion).catch(() => '');
+  if (cached) return cached;
+  if (item.image) {
+    const thumbnail = await makeThumbnail(item.image);
+    await offline.putThumb(uid,item.id,item.photoVersion,thumbnail).catch(() => {});
+    return thumbnail;
+  }
+  if (!item.hasPhoto || !navigator.onLine) return '';
+  const snap = await withPhotoDeadline(photoRefs(uid,item.id).thumb.get({ source: 'server' }));
+  if (!snap.exists || !snap.data().image) return '';
+  const thumbnail = snap.data().image;
+  await offline.putThumb(uid,item.id,item.photoVersion,thumbnail).catch(() => {});
+  return thumbnail;
+}
+
+async function loadDetailPhoto(uid,item) {
+  const pending = await offline.pendingOne(uid,item.id).catch(() => null);
+  if (pending) return { image: pending.image || '', previewOnly: false };
+  if (item.image) return { image: item.image, previewOnly: false };
+  if (!item.hasPhoto) return { image: '', previewOnly: false };
+  if (navigator.onLine) {
+    try {
+      const snap = await withPhotoDeadline(photoRefs(uid,item.id).full.get({ source: 'server' }));
+      if (snap.exists && snap.data().image) return { image: snap.data().image, previewOnly: false };
+    } catch (_) { /* text and cached thumbnail remain available */ }
+  }
+  return { image: await offline.getThumb(uid,item.id,item.photoVersion).catch(() => ''), previewOnly: true };
+}
 
 function App() {
   const [user, setUser] = useState(null);
@@ -215,8 +314,8 @@ function App() {
     const sequence = ++openSequence.current;
     setOpening(true);
     try {
-      const image = await readFullPhoto(user.uid, item);
-      if (sequence === openSequence.current) setSelected({ ...item, image });
+      const result = await loadDetailPhoto(user.uid, item);
+      if (sequence === openSequence.current) setSelected({ ...item, image: result.image, _previewOnly: result.previewOnly });
     } catch (error) {
       if (sequence === openSequence.current) window.alert('Não foi possível abrir a foto. ' + saveErrorMessage(error));
     } finally {
@@ -226,6 +325,7 @@ function App() {
 
   const convertExistingPhotos = async () => {
     if (conversionLock.current || !user) return;
+    if (!navigator.onLine) { setConversionStatus('A conversão precisa de conexão.'); return; }
     const legacy = items.filter(item => item.image);
     if (!legacy.length) { setConversionStatus('Não há fotos antigas para converter.'); return; }
     if (!window.confirm('Converter as fotos antigas desta conta? Execute somente após ajustar as regras do Firebase e atualizar o aplicativo em todos os aparelhos.')) return;
@@ -409,17 +509,51 @@ function App() {
     openSequence.current++;
     setOpening(false);
     setSelected(null);
+    setShowForm(false);
     setItems([]);
     setListError('');
     if (!user) return;
-    return db
-      .collection("users")
-      .doc(user.uid)
-      .collection("items")
-      .onSnapshot(snap => {
-        setListError('');
-        setItems(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-      }, error => setListError('Não foi possível carregar os cadastros. ' + saveErrorMessage(error)));
+    let active = true;
+    let generation = 0;
+    const uid = user.uid;
+    const refresh = async () => {
+      const ownGeneration = ++generation;
+      try {
+        const [rows,pending] = await Promise.all([offline.getList(uid),offline.getPending(uid)]);
+        if (active && ownGeneration === generation) setItems(offline.merge(rows,pending));
+      } catch (_) {
+        if (active) setListError('O armazenamento local não está disponível. Não é possível cadastrar offline neste navegador.');
+      }
+    };
+    const reconnect = () => { refresh(); syncPending(uid); };
+    offlineChanges.addEventListener('change',refresh);
+    window.addEventListener('online',reconnect);
+    const visible = () => { if(document.visibilityState === 'visible') reconnect(); };
+    document.addEventListener('visibilitychange',visible);
+    const timer = setInterval(() => { if(document.visibilityState === 'visible') syncPending(uid); },15000);
+    refresh();
+    syncPending(uid);
+    const unsubscribe = db.collection('users').doc(uid).collection('items')
+      .onSnapshot({ includeMetadataChanges: true }, async snap => {
+        if (!active || snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
+        const rows = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        try {
+          await offline.putList(uid,rows);
+          if(active) { setListError(''); await refresh(); }
+        } catch (_) {
+          if(active) { setItems(rows); setListError('Sem espaço local. Libere espaço antes de cadastrar offline.'); }
+        }
+      }, error => {
+        if(active && navigator.onLine) setListError('Não foi possível atualizar os cadastros. ' + saveErrorMessage(error));
+      });
+    return () => {
+      active = false;
+      unsubscribe();
+      clearInterval(timer);
+      offlineChanges.removeEventListener('change',refresh);
+      window.removeEventListener('online',reconnect);
+      document.removeEventListener('visibilitychange',visible);
+    };
   }, [user]);
 
   const handleChange = async e => {
@@ -468,7 +602,7 @@ function App() {
     if (cropLock.current) { setFormError('Confirme ou cancele o ajuste da foto antes de salvar.'); return; }
     setFormError('');
     if (!user) { setFormError('Entre novamente para salvar.'); return; }
-    if (!navigator.onLine) { setFormError('Você está sem conexão. Conecte-se antes de salvar.'); return; }
+    if (editingId && !navigator.onLine) { setFormError('Edições precisam de conexão.'); return; }
     if (formType === 'vehicle' && !vehicleForm.model.trim()) { setFormError('Informe o modelo do veículo.'); return; }
     if (formType === 'vehicle' && vehicleForm.ownerId && !personItems.some(p => p.id === vehicleForm.ownerId)) { setFormError('O proprietário selecionado não está mais cadastrado. Selecione novamente.'); return; }
     const payload = formType === 'vehicle'
@@ -487,6 +621,26 @@ function App() {
     }, 15000);
     try {
       const ref = db.collection('users').doc(user.uid).collection('items');
+      if (!editingId) {
+        const uid = user.uid;
+        const id = ref.doc().id;
+        const image = payload.image;
+        const thumbnail = image ? await makeThumbnail(image) : '';
+        delete payload.image;
+        payload.hasPhoto = !!image;
+        payload.photoVersion = image ? crypto.randomUUID() : '';
+        await offline.enqueue(uid,id,payload,image,thumbnail);
+        // Completion here means the local transaction committed, never just a
+        // fire-and-forget write. The card stays pending until server confirmation.
+        announceOfflineChange();
+        navigator.storage?.persist?.().catch(() => {});
+        setForm(emptyForm);
+        setEditingId(null);
+        setShowForm(false);
+        setSelected(null);
+        syncPending(uid);
+        return;
+      }
       const target = editingId ? ref.doc(editingId) : ref.doc();
       const refs = photoRefs(user.uid, target.id);
       const image = payload.image;
@@ -522,6 +676,7 @@ function App() {
 
   const toggleGeneralAlert = async () => {
     if (alertLock.current || !selected || !user) return;
+    if (selected._pending || !navigator.onLine) { window.alert('Aguarde a sincronização e conecte-se para alterar o alerta.'); return; }
     const targetId = selected.id;
     const nextValue = selected.alertaGeral !== true;
     if (!window.confirm(nextValue ? 'Ativar o alerta geral deste cadastro?' : 'Retirar o alerta geral deste cadastro?')) return;
@@ -544,6 +699,7 @@ function App() {
 
   const deleteItem = async () => {
     if (!user || !confirmDeleteId) return;
+    if (!navigator.onLine || items.find(item => item.id === confirmDeleteId)?._pending) { window.alert('A exclusão precisa de conexão e de um cadastro sincronizado.'); return; }
     try {
       const refs = photoRefs(user.uid, confirmDeleteId);
       const batch = db.batch();
@@ -564,7 +720,7 @@ function App() {
       [i.name, i.vulgo, i.faction, i.ownerName]
         .some(v => v?.toLowerCase().includes(search.toLowerCase()))
     )
-    .sort((a,b)=>a.name.localeCompare(b.name,"pt-BR",{sensitivity:"base"}));
+    .sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''),"pt-BR",{sensitivity:"base"}));
 
   if (!user) {
     return (
@@ -609,12 +765,13 @@ function App() {
           <div
             key={item.id}
             onClick={()=>openDetails(item)}
-            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0"
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative" style={item._pending ? { paddingBottom: 20 } : undefined}
           >
             <LazyThumbnail uid={user.uid} item={item} />
             <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
             {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
             <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); if(item._pendingError) window.alert(item._pendingError); if(navigator.onLine) syncPending(user.uid); }}>!</button>}
           </div>
         ))}
       </div>
@@ -628,12 +785,13 @@ function App() {
           <div
             key={item.id}
             onClick={()=>openDetails(item)}
-            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0"
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative" style={item._pending ? { paddingBottom: 20 } : undefined}
           >
             <LazyThumbnail uid={user.uid} item={item} />
             <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
             {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
             <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); if(item._pendingError) window.alert(item._pendingError); if(navigator.onLine) syncPending(user.uid); }}>!</button>}
           </div>
         ))}
       </div>
@@ -684,6 +842,8 @@ function App() {
 
             <button
               onClick={() => {
+                if (!navigator.onLine || selected._pending) { window.alert('A edição precisa de conexão e de um cadastro sincronizado.'); return; }
+                if (selected._previewOnly) { window.alert('Abra novamente o cadastro com conexão para carregar a foto antes de editar.'); return; }
                 setForm(Object.fromEntries(Object.keys(emptyForm).map(key => [key, selected[key] ?? ''])));
                 setFormType(selected.type === 'vehicle' ? 'vehicle' : 'person');
                 setVehicleForm({ model: selected.model || '', ownerName: selected.ownerName || '', ownerId: selected.ownerId || '', alert: selected.alert || '' });
