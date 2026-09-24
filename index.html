@@ -831,9 +831,8 @@ function App() {
             <p><b>Endereço:</b> {selected.address}</p>
             </>}
             <p className="whitespace-pre-wrap"><b>Descrição:</b> {selected.description}</p>
-            {selected.type !== 'vehicle' && <div className="pt-3 space-y-2">
+            {selected.type !== 'vehicle' && items.some(v => v.type === 'vehicle' && v.ownerId === selected.id) && <div className="pt-3 space-y-2">
               <p className="font-semibold">Veículos</p>
-              {!items.some(v => v.type === 'vehicle' && v.ownerId === selected.id) && <p className="text-sm text-gray-400">Nenhum veículo vinculado.</p>}
               {items.filter(v => v.type === 'vehicle' && v.ownerId === selected.id).map(v => <button key={v.id} onClick={() => openDetails(v)} className="block w-full text-left bg-gray-800 p-2 rounded break-words">🏍️ {v.model || v.name}{v.alertaGeral === true ? ' · Alerta ativo' : ''}</button>)}
             </div>}
             </div>
