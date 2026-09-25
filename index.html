@@ -47,15 +47,19 @@
 <body class="bg-black text-white">
 <div id="root"></div>
 
-<script type="text/babel">
-const { useState, useEffect, useRef } = React;
-
+<script>
 firebase.initializeApp({
   apiKey: "AIzaSyBAH2rBIR5ibvde0VMVF38QyM4L2s8IqIQ",
   authDomain: "zebrol.firebaseapp.com",
   projectId: "zebrol",
   appId: "1:846397475446:web:1b38ce35dcae4e1754ed57"
 });
+</script>
+<script src="access-control.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+
 
 const auth = firebase.auth();
 const db = firebase.firestore();
@@ -111,7 +115,7 @@ function saveErrorMessage(error) {
 }
 
 function photoRefs(uid, id) {
-  const item = db.collection('users').doc(uid).collection('items').doc(id);
+  const item = db.collection('users').doc(dataOwner(uid)).collection('items').doc(id);
   return { item, full: item.collection('photos').doc('full'), thumb: item.collection('photos').doc('thumb') };
 }
 
@@ -223,17 +227,18 @@ async function withPhotoDeadline(promise) {
 }
 
 async function syncPending(uid) {
-  if (offlineSyncRunning || !navigator.onLine || auth.currentUser?.uid !== uid) return;
+  if (offlineSyncRunning || !navigator.onLine || !maySync(uid)) return;
   offlineSyncRunning = true;
   try {
     const entries = await offline.getPending(uid);
     for (const entry of entries) {
-      if (!navigator.onLine || auth.currentUser?.uid !== uid) break;
+      if (!navigator.onLine || !maySync(uid)) break;
       try {
         const refs = photoRefs(uid, entry.id);
         // Stable document ID + token make retries safe after a lost acknowledgement
         // or simultaneous sends by two browser tabs.
         await db.runTransaction(async tx => {
+          if (!maySync(uid)) throw new Error('Acesso não autorizado.');
           const existing = await tx.get(refs.item);
           if (existing.exists) {
             if (existing.data()._creationToken !== entry.token) throw new Error('Conflito de cadastro. O envio permanece pendente.');
@@ -296,8 +301,122 @@ async function loadDetailPhoto(uid,item) {
   return { image: await offline.getThumb(uid,item.id,item.photoVersion).catch(() => ''), previewOnly: true };
 }
 
+function AccessGate({ status }) {
+  const [email,setEmail] = useState('');
+  const [password,setPassword] = useState('');
+  const [name,setName] = useState('');
+  const [requesting,setRequesting] = useState(false);
+  const [busy,setBusy] = useState(false);
+  const [error,setError] = useState('');
+  const run = async action => {
+    if(busy) return;
+    setBusy(true); setError('');
+    try { await action(); }
+    catch(e) {
+      setError(e.code?.startsWith('auth/') ?
+        (e.code === 'auth/operation-not-allowed' ? 'O acesso por aparelho ainda precisa ser ativado no Firebase.' : 'Não foi possível entrar. Confira os dados e sua conexão.') : e.message);
+    } finally { setBusy(false); }
+  };
+  const login = <form className="flex flex-col items-center gap-3" onSubmit={e=>{e.preventDefault();run(async()=>{
+    await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+    await auth.signInWithEmailAndPassword(email,password);
+  });}}>
+    <input type="email" required autoComplete="username" aria-label="E-mail" placeholder="E-mail" value={email} onChange={e=>setEmail(e.target.value)} className="bg-gray-800 p-2 rounded w-64 max-w-full" />
+    <input type="password" required autoComplete="current-password" aria-label="Senha" placeholder="Senha" value={password} onChange={e=>setPassword(e.target.value)} className="bg-gray-800 p-2 rounded w-64 max-w-full" />
+    <button disabled={busy} className="bg-blue-600 px-4 py-2 rounded disabled:opacity-50">{busy?'Aguarde…':'Entrar'}</button>
+  </form>;
+  const messages = {checking:'Verificando acesso…',pending:'Aguardando autorização',blocked:'Acesso bloqueado',rejected:'Solicitação recusada',offline:'Conecte à internet para verificar sua autorização.',error:'Não foi possível verificar o acesso. Confira a conexão e abra novamente.',configuration:'Configuração do administrador pendente.'};
+  return <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
+    <ZebrolTitle />
+    {messages[status] && <p role="status">{messages[status]}</p>}
+    {status === 'login' && login}
+    {['login','request'].includes(status) && <>
+      {!requesting && <button className="text-blue-400 p-3" onClick={()=>setRequesting(true)}>Solicitar acesso</button>}
+      {requesting && <form className="flex flex-col items-center gap-3" onSubmit={e=>{e.preventDefault();run(()=>requestDeviceAccess(name));}}>
+        <input required maxLength={60} aria-label="Nome de usuário" placeholder="Nome de usuário" value={name} onChange={e=>setName(e.target.value)} className="bg-gray-800 p-2 rounded w-64 max-w-full" />
+        <button disabled={busy} className="bg-blue-600 px-4 py-2 rounded disabled:opacity-50">{busy?'Enviando…':'Enviar solicitação'}</button>
+      </form>}
+    </>}
+    {['pending','blocked','rejected'].includes(status) && <p className="text-gray-400 text-sm">Código: {auth.currentUser?.uid.slice(-8)}</p>}
+    {!['login','checking','configuration'].includes(status) && <details className="space-y-3"><summary className="cursor-pointer text-gray-400">Administrador</summary>{login}</details>}
+    {error && <p role="alert" className="text-red-300 max-w-sm">{error}</p>}
+  </div>;
+}
+
+function AccessPanel({ onClose }) {
+  const [requests,setRequests] = useState([]);
+  const [error,setError] = useState('');
+  const [loading,setLoading] = useState(true);
+  const [busy,setBusy] = useState('');
+  useEffect(()=>deviceRequests().onSnapshot(snap=>{
+    setRequests(snap.docs.map(d=>({...d.data(),id:d.id})).sort((a,b)=>a.name.localeCompare(b.name,'pt-BR')));
+    setLoading(false); setError('');
+  },()=>{setError('Não foi possível carregar os acessos. Confira sua conexão e as regras do Firebase.');setLoading(false);}),[]);
+  useEffect(()=>{
+    const old=document.body.style.overflow;document.body.style.overflow='hidden';
+    const escape=e=>{if(e.key==='Escape')onClose();};window.addEventListener('keydown',escape);
+    return()=>{document.body.style.overflow=old;window.removeEventListener('keydown',escape);};
+  },[]);
+  const change = async (row,status) => {
+    if(busy) return;
+    const action={approved:'Autorizar',blocked:'Bloquear',rejected:'Recusar'}[status];
+    if(!window.confirm(action+' o acesso de '+row.name+'?'))return;
+    setBusy(row.id);setError('');
+    try{await changeDeviceAccess(row.id,status);}catch(e){setError(e.message);}finally{setBusy('');}
+  };
+  return <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:100}}>
+    <div role="dialog" aria-modal="true" aria-labelledby="access-title" className="mobile-panel bg-gray-900 rounded-xl max-w-md p-4 gap-4">
+      <div className="flex items-center justify-between"><h2 id="access-title" className="text-xl font-bold">Acessos</h2><button autoFocus aria-label="Fechar acessos" onClick={onClose} className="text-red-400 text-2xl px-2">×</button></div>
+      {error && <p role="alert" className="text-red-300">{error}</p>}
+      {loading && <p>Carregando…</p>}
+      <div className="mobile-scroll space-y-5">
+      {[['pending','Aguardando aprovação'],['approved','Autorizados'],['blocked','Bloqueados'],['rejected','Recusados']].map(([status,title])=>{
+        const rows=requests.filter(r=>r.status===status);
+        return <section key={status} className="space-y-2"><h3 className="font-bold">{title} — {rows.length}</h3>
+          {!rows.length && <p className="text-sm text-gray-400">Nenhum acesso</p>}
+          {rows.map(row=><div key={row.id} className="bg-gray-800 rounded p-3 space-y-2">
+            <p className="font-semibold break-words">{row.name}</p><p className="text-xs text-gray-400">Código: {row.id.slice(-8)}</p>
+            <div className="flex flex-wrap gap-3">
+              {status!=='approved' && <button disabled={!!busy} onClick={()=>change(row,'approved')} className="text-green-400 disabled:opacity-50">Autorizar</button>}
+              {status==='pending' && <button disabled={!!busy} onClick={()=>change(row,'rejected')} className="text-red-400 disabled:opacity-50">Recusar</button>}
+              {status==='approved' && <button disabled={!!busy} onClick={()=>change(row,'blocked')} className="text-red-400 disabled:opacity-50">Bloquear</button>}
+            </div>
+          </div>)}
+        </section>;
+      })}
+      </div>
+    </div>
+  </div>;
+}
+
+function AccessWatermark({ user }) {
+  if (!user || user.isAdmin) return null;
+  const name = String(user.name || ('Acesso ' + user.authUid.slice(-8))).trim().slice(0,60);
+  const escapeXml = value => value.replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
+  const lines = Array.from(name).reduce((all,char,index) => {
+    const line = Math.floor(index / 30); all[line] = (all[line] || '') + char; return all;
+  }, []);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="135" viewBox="0 0 240 135"><g transform="rotate(-25 120 67)" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="600" fill="white" stroke="black" stroke-width="0.6" paint-order="stroke" opacity="0.16">${lines.map((line,i)=>`<text x="120" y="${67+i*14}">${escapeXml(line)}</text>`).join('')}</g></svg>`;
+  return ReactDOM.createPortal(<div aria-hidden="true" style={{position:'fixed',inset:0,zIndex:2147483647,pointerEvents:'none',userSelect:'none',backgroundImage:`url("data:image/svg+xml,${encodeURIComponent(svg)}")`,backgroundRepeat:'repeat'}} />,document.body);
+}
+
+function AlertBolt({ style }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 160" aria-hidden="true" focusable="false" style={style}>
+    <path fill="currentColor" d="M53 3 H82 L56 48 L79 40 L57 88 L79 80 L30 157 L42 103 L20 111 L37 65 L13 74 Z" />
+  </svg>;
+}
+
+function ZebrolTitle() {
+  return <h1 className="text-3xl font-bold text-center" style={{position:'relative',isolation:'isolate',width:'fit-content',marginLeft:'auto',marginRight:'auto',padding:'13px 8px',lineHeight:'36px'}}>
+    <AlertBolt style={{position:'absolute',height:62,width:39,left:'50%',top:'50%',transform:'translate(-50%, -50%)',color:'#dc2626',zIndex:0,pointerEvents:'none'}} />
+    <span style={{position:'relative',zIndex:1,textShadow:'0 1px 3px #000, 0 0 2px #000'}}>ZEBROL</span>
+  </h1>;
+}
+
 function App() {
   const [user, setUser] = useState(null);
+  const [accessStatus,setAccessStatus] = useState('checking');
+  const [showAccess,setShowAccess] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -315,7 +434,7 @@ function App() {
     setOpening(true);
     try {
       const result = await loadDetailPhoto(user.uid, item);
-      if (sequence === openSequence.current) setSelected({ ...item, image: result.image, _previewOnly: result.previewOnly });
+      if (maySync(user.uid) && sequence === openSequence.current) setSelected({ ...item, image: result.image, _previewOnly: result.previewOnly });
     } catch (error) {
       if (sequence === openSequence.current) window.alert('Não foi possível abrir a foto. ' + saveErrorMessage(error));
     } finally {
@@ -503,7 +622,9 @@ function App() {
     return () => { document.body.style.overflow = oldOverflow; };
   }, [selected, showForm, confirmDelete]);
 
-  useEffect(() => auth.onAuthStateChanged(setUser), []);
+  useEffect(() => watchAccess(state => {
+    setAccessStatus(state.status); setUser(state.user); setShowAccess(false);
+  }), []);
 
   useEffect(() => {
     openSequence.current++;
@@ -533,7 +654,7 @@ function App() {
     const timer = setInterval(() => { if(document.visibilityState === 'visible') syncPending(uid); },15000);
     refresh();
     syncPending(uid);
-    const unsubscribe = db.collection('users').doc(uid).collection('items')
+    const unsubscribe = db.collection('users').doc(dataOwner(uid)).collection('items')
       .onSnapshot({ includeMetadataChanges: true }, async snap => {
         if (!active || snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
         const rows = snap.docs.map(d => ({ ...d.data(), id: d.id }));
@@ -620,7 +741,7 @@ function App() {
       setSaveStatus('O servidor ainda não confirmou. Verifique a conexão e mantenha esta tela aberta. Não é necessário clicar novamente.');
     }, 15000);
     try {
-      const ref = db.collection('users').doc(user.uid).collection('items');
+      const ref = db.collection('users').doc(dataOwner(user.uid)).collection('items');
       if (!editingId) {
         const uid = user.uid;
         const id = ref.doc().id;
@@ -687,7 +808,7 @@ function App() {
     alertLock.current = true;
     setAlertSaving(true);
     try {
-      await db.collection('users').doc(user.uid).collection('items').doc(targetId).update({ alertaGeral: nextValue });
+      await db.collection('users').doc(dataOwner(user.uid)).collection('items').doc(targetId).update({ alertaGeral: nextValue });
       setSelected(current => current && current.id === targetId ? { ...current, alertaGeral: nextValue } : current);
     } catch (error) {
       window.alert('Não foi possível alterar o alerta geral. ' + saveErrorMessage(error));
@@ -698,7 +819,7 @@ function App() {
   };
 
   const deleteItem = async () => {
-    if (!user || !confirmDeleteId) return;
+    if (!user?.isAdmin || !maySync(user.uid) || !confirmDeleteId) return;
     if (!navigator.onLine || items.find(item => item.id === confirmDeleteId)?._pending) { window.alert('A exclusão precisa de conexão e de um cadastro sincronizado.'); return; }
     try {
       const refs = photoRefs(user.uid, confirmDeleteId);
@@ -722,26 +843,18 @@ function App() {
     )
     .sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''),"pt-BR",{sensitivity:"base"}));
 
-  if (!user) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
-        <h1 className="text-3xl font-bold">ZEBROL</h1>
-        <input className="bg-gray-800 p-2 rounded w-64" placeholder="Email" onChange={e=>setEmail(e.target.value)} />
-        <input type="password" className="bg-gray-800 p-2 rounded w-64" placeholder="Senha" onChange={e=>setPassword(e.target.value)} />
-        <button onClick={()=>auth.signInWithEmailAndPassword(email,password)} className="bg-blue-600 px-4 py-2 rounded">
-          Entrar
-        </button>
-      </div>
-    );
-  }
+  if (!user) return <AccessGate status={accessStatus} />;
 
   return (
     <div className="min-h-screen p-6 space-y-6">
-      <h1 className="text-3xl font-bold text-center">ZEBROL</h1>
+      <AccessWatermark user={user} />
+      {user.isAdmin && <button aria-label="Gerenciar acessos" title="Acessos" onClick={()=>setShowAccess(true)} className="absolute top-4 left-3 text-2xl p-2">👥</button>}
+      {user.isAdmin && showAccess && <AccessPanel onClose={()=>setShowAccess(false)} />}
+      <ZebrolTitle />
 
       {listError && <p role="alert" className="text-red-300 text-center">{listError}</p>}
       {opening && <p role="status" className="text-gray-400 text-center">Carregando foto…</p>}
-      {conversionMode && <div className="max-w-md mx-auto space-y-2">
+      {user.isAdmin && conversionMode && <div className="max-w-md mx-auto space-y-2">
         <button onClick={convertExistingPhotos} disabled={converting} className="bg-blue-600 p-2 rounded disabled:opacity-50">{converting ? 'Convertendo…' : 'Converter fotos antigas'}</button>
         <p role="status">{conversionStatus}</p>
       </div>}
@@ -779,7 +892,7 @@ function App() {
       </section>
 
       <section aria-labelledby="todos-heading" className="max-w-md mx-auto space-y-4">
-        <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS</h2>
+        <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS <span className="text-sm font-normal">{items.filter(item => item.alertaGeral !== true).length}</span></h2>
       <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
         {filtered.filter(item => item.alertaGeral !== true).map(item=>(
           <div
@@ -866,10 +979,10 @@ function App() {
               className="px-3 text-2xl disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ color: selected.alertaGeral === true ? '#ef4444' : '#9ca3af' }}
             >
-              <span aria-hidden="true" style={{ display: 'inline-block', filter: selected.alertaGeral === true ? 'brightness(0) saturate(100%) invert(36%) sepia(90%) saturate(1600%) hue-rotate(335deg) brightness(103%) contrast(90%)' : 'grayscale(1)' }}>💀</span>
+              <AlertBolt style={{display:'block',width:24,height:34}} />
             </button>
 
-            <button
+            {user.isAdmin && <button
               onClick={() => {
                 setConfirmDeleteId(selected.id); // ← AJUSTADO
                 setConfirmDelete(true);
@@ -877,14 +990,14 @@ function App() {
               aria-label="Excluir cadastro" className="px-3 text-red-400 text-2xl"
             >
               🗑️
-            </button>
+            </button>}
 
           </div>
           </div>
         </div>
       )}
 
-      {confirmDelete && (
+      {user.isAdmin && confirmDelete && (
         <div className="mobile-overlay bg-black bg-opacity-80" style={{ zIndex: 80 }}>
           <div className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full max-h-full overflow-y-auto space-y-4 text-center">
             <p className="text-lg font-semibold">
