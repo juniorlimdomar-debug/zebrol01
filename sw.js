@@ -1,4 +1,4 @@
-const CACHE = 'zebrol-shell-offline-v6';
+const CACHE = 'zebrol-shell-offline-v7';
 const FILES = ['index.html','access-control.js','offline-store.js','offline-register.js','manifest.webmanifest','icon-192.png','icon-512.png',
   'vendor/tailwind.js','vendor/react.js','vendor/react-dom.js','vendor/babel.js',
   'vendor/firebase-app.js','vendor/firebase-auth.js','vendor/firebase-firestore.js'];
