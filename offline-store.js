@@ -34,6 +34,7 @@
     delete result.image;
     delete result._pending;
     delete result._pendingError;
+    delete result._duplicateId;
     delete result._previewOnly;
     delete result._creationToken;
     return result;
@@ -63,14 +64,15 @@
     await transact(['pending'], 'readwrite', tx => tx.objectStore('pending').add(entry));
     return entry;
   }
-  function setPendingError(uid, id, message) {
+  function setPendingError(uid, id, message, duplicateId = '') {
     return transact(['pending'], 'readwrite', tx => {
       const store = tx.objectStore('pending');
-      store.get(keyFor(uid,id)).onsuccess = e => { if(e.target.result) store.put({ ...e.target.result, error: message }); };
+      store.get(keyFor(uid,id)).onsuccess = e => { if(e.target.result) store.put({ ...e.target.result, error: message, duplicateId }); };
     });
   }
   // The outbox is removed only after a successful server commit; promote text
   // into the local list in the same local transaction for restart safety.
+  function discardPending(uid,id) { return transact(['pending'],'readwrite',tx=>tx.objectStore('pending').delete(keyFor(uid,id))); }
   function confirm(entry) {
     return transact(['pending','lists'], 'readwrite', tx => {
       const lists = tx.objectStore('lists');
@@ -84,7 +86,7 @@
   }
   function merge(items, pending) {
     const rows = new Map(items.map(item => [item.id, item]));
-    pending.forEach(entry => rows.set(entry.id, { ...entry.item, id: entry.id, _pending: true, _pendingError: entry.error }));
+    pending.forEach(entry => rows.set(entry.id, { ...entry.item, id: entry.id, _pending: true, _pendingError: entry.error, _duplicateId: entry.duplicateId }));
     return [...rows.values()];
   }
   function getThumb(uid, id, version) {
@@ -114,5 +116,5 @@
       };
     });
   }
-  root.ZebrolOffline = { open, getList, putList, getPending, pendingOne, enqueue, confirm, setPendingError, merge, getThumb, putThumb, clean, THUMB_LIMIT };
+  root.ZebrolOffline = { open, discardPending, getList, putList, getPending, pendingOne, enqueue, confirm, setPendingError, merge, getThumb, putThumb, clean, THUMB_LIMIT };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -86,3 +86,14 @@ async function changeDeviceAccess(id, status) {
   if (!['approved','blocked','rejected'].includes(status)) throw new Error('Ação inválida.');
   await deviceRequests().doc(id).update({ status });
 }
+
+async function deleteDeviceRequest(id) {
+  if(accessAuth.currentUser?.uid !== ZEBROL_ADMIN_UID || !navigator.onLine)throw new Error('Entre como administrador e conecte à internet.');
+  const ref=deviceRequests().doc(id);
+  await accessDb.runTransaction(async tx=>{
+    const snapshot=await tx.get(ref);
+    if(!snapshot.exists)return;
+    if(!['blocked','rejected'].includes(snapshot.data().status))throw new Error('Somente pedidos bloqueados ou recusados podem ser excluídos.');
+    tx.delete(ref);
+  });
+}
