@@ -420,10 +420,45 @@ function ZebrolTitle() {
   </h1>;
 }
 
+function formatGeneralVehicleDate(value) {
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')))return '';
+  const [year,month,day]=value.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function GeneralVehiclesPreview({user}) {
+  const [rows,setRows]=useState([]);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    let active=true,serverArrived=false;
+    const key=user.uid+'~general';
+    offline.getList(key).then(data=>{if(active&&!serverArrived){setRows(data);if(!navigator.onLine)setLoading(false);}}).catch(()=>{});
+    const unsub=generalVehicles.collection().onSnapshot({includeMetadataChanges:true},snap=>{
+      if(!active || snap.metadata.hasPendingWrites || snap.metadata.fromCache)return;
+      serverArrived=true;
+      const data=snap.docs.map(doc=>({...doc.data(),id:doc.id})).sort((a,b)=>a.plate.localeCompare(b.plate,'pt-BR'));
+      setRows(data);setLoading(false);offline.putList(key,data).catch(()=>{});
+    },()=>{if(active)setLoading(false);});
+    const disconnected=()=>{if(active)setLoading(false);};window.addEventListener('offline',disconnected);
+    return()=>{active=false;unsub();window.removeEventListener('offline',disconnected);};
+  },[user.uid]);
+  const visible=rows.slice(0,4);
+  return <span aria-live="polite" className="w-full flex-1 flex flex-col justify-center overflow-hidden px-1 py-1 text-left" style={{aspectRatio:'3 / 4'}}>
+    {loading&&!rows.length ? <span className="text-center text-[10px] text-gray-400">Carregando…</span> : !rows.length ? <span className="text-center text-[10px] text-gray-400">Nenhum veículo</span> : <>
+      {visible.map(row=><span key={row.id} className="block border-b border-gray-800 py-1 min-w-0">
+        <span className="block text-[10px] font-bold truncate">{row.plate}</span>
+        <span className="block text-[9px] text-gray-400 truncate">{row.model}</span>
+      </span>)}
+      {rows.length>visible.length && <span className="block pt-1 text-center text-[9px] text-gray-400">+{rows.length-visible.length} veículo{rows.length-visible.length===1?'':'s'}</span>}
+    </>}
+  </span>;
+}
+
 function GeneralVehiclesPanel({user,onClose}) {
   const [rows,setRows]=useState([]);
   const [draft,setDraft]=useState(null);
   const [removing,setRemoving]=useState(null);
+  const [actionMode,setActionMode]=useState(null);
   const [error,setError]=useState('');
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState(false);
@@ -446,8 +481,13 @@ function GeneralVehiclesPanel({user,onClose}) {
     const previous=document.body.style.overflow;document.body.style.overflow='hidden';
     return()=>{document.body.style.overflow=previous;};
   },[]);
-  const edit=row=>{if(busy.current)return;setError('');setDraft({...row,expectedVersion:row.version});};
-  const add=()=>{if(busy.current)return;setError('');setDraft({id:generalVehicles.collection().doc().id,plate:'',model:'',color:'',year:'',expectedVersion:null});};
+  const edit=row=>{if(busy.current)return;setError('');setActionMode(null);setDraft({...row,date:row.date||'',expectedVersion:row.version});};
+  const add=()=>{if(busy.current)return;setError('');setActionMode(null);setDraft({id:generalVehicles.collection().doc().id,plate:'',model:'',color:'',year:'',date:'',expectedVersion:null});};
+  const selectAction=row=>{
+    if(busy.current || draft)return;
+    if(actionMode==='edit')edit(row);
+    if(actionMode==='delete'){setError('');setActionMode(null);setRemoving(row);}
+  };
   const commit=async()=>{
     if(!draft || busy.current)return;
     busy.current=true;setSaving(true);setError('');
@@ -467,23 +507,48 @@ function GeneralVehiclesPanel({user,onClose}) {
         {error && <p role="alert" className="text-red-300 text-sm">{error}</p>}
         {loading && <p role="status" className="text-gray-400 text-sm">Carregando…</p>}
         <table className="w-full text-xs sm:text-sm" style={{tableLayout:'fixed',borderCollapse:'collapse'}}>
-          <thead><tr>{['PLACA','MODELO','COR','ANO'].map(label=><th key={label} className="text-left p-1 font-semibold" style={{borderBottom:'1px solid rgba(156,163,175,0.15)'}}>{label}</th>)}</tr></thead>
-          <tbody>{rows.map(row=><tr key={row.id}>
-            {[row.plate,row.model,row.color].map((value,i)=><td key={i} className="align-top p-1 break-words" style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>{value}</td>)}
-            <td className="align-top p-1" style={{borderBottom:'1px solid rgba(156,163,175,0.10)'}}><span>{row.year}</span><div className="flex flex-wrap gap-1">
-              <button disabled={saving} aria-label={'Editar veículo '+row.plate} onClick={()=>edit(row)} className="text-blue-400 px-1">✏️</button>
-              {user.isAdmin && <button disabled={saving} aria-label={'Remover veículo '+row.plate} onClick={()=>{setError('');setRemoving(row);}} className="text-red-400 px-1">🗑️</button>}
-            </div></td>
-          </tr>)}</tbody>
+          <colgroup><col style={{width:'21%'}}/><col style={{width:'25%'}}/><col style={{width:'19%'}}/><col style={{width:'13%'}}/><col style={{width:'22%'}}/></colgroup>
+          <thead><tr>{['PLACA','MODELO','COR','ANO','DATA'].map(label=><th key={label} className="text-left p-1 font-semibold text-[10px] sm:text-sm" style={{borderBottom:'1px solid rgba(156,163,175,0.15)'}}>{label}</th>)}</tr></thead>
+          <tbody>{rows.map(row=><tr
+            key={row.id}
+            onClick={()=>selectAction(row)}
+            onKeyDown={event=>{if(actionMode&&(event.key==='Enter'||event.key===' ')){event.preventDefault();selectAction(row);}}}
+            tabIndex={actionMode?0:undefined}
+            aria-label={actionMode ? (actionMode==='edit'?'Editar ':'Apagar ')+row.plate : undefined}
+            className={actionMode?'cursor-pointer hover:bg-gray-800 focus:bg-gray-800 focus:outline-none':''}
+          >
+            {[row.plate,row.model,row.color,row.year,formatGeneralVehicleDate(row.date)].map((value,i)=><td key={i} className="align-top p-1 break-words text-[10px] sm:text-sm" style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>{value||'—'}</td>)}
+          </tr>)}
+          {draft && <>
+            <tr>{[
+              ['plate','Placa',20,'text'],['model','Modelo',120,'text'],['color','Cor',60,'text'],['year','Ano',4,'numeric'],['date','Data',10,'date']
+            ].map(([key,label,max,type])=><td key={key} className="align-top p-1" style={{borderBottom:'1px solid rgba(156,163,175,0.10)'}}>
+              <input
+                autoFocus={key==='plate'}
+                required={key==='plate'||key==='model'}
+                aria-label={label}
+                title={label}
+                type={type==='date'?'date':'text'}
+                inputMode={type==='numeric'?'numeric':'text'}
+                maxLength={max}
+                disabled={saving}
+                value={draft[key]||''}
+                onChange={e=>setDraft(d=>({...d,[key]:e.target.value}))}
+                onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commit();}}}
+                className="w-full min-w-0 bg-gray-800 p-1 rounded text-[10px] sm:text-sm"
+              />
+            </td>)}</tr>
+            <tr><td colSpan="5" className="pt-2"><div className="flex gap-2"><button type="button" disabled={saving} onClick={commit} className="flex-1 bg-blue-600 p-2 rounded">{saving?'Salvando…':'Salvar'}</button><button type="button" disabled={saving} onClick={()=>setDraft(null)} className="flex-1 bg-gray-700 p-2 rounded">Cancelar</button></div></td></tr>
+          </>}
+          </tbody>
         </table>
         {!loading&&!rows.length && <p className="text-gray-400 text-sm">Nenhum veículo cadastrado.</p>}
-        {draft && <form onSubmit={event=>{event.preventDefault();commit();}} className="space-y-2">
-          <fieldset disabled={saving} className="grid grid-cols-2 gap-2">
-            {[['plate','PLACA',20],['model','MODELO',120],['color','COR',60],['year','ANO',4]].map(([key,label,max])=><label key={key} className="text-xs">{label}<input autoFocus={key==='plate'} required={key==='plate'||key==='model'} maxLength={max} inputMode={key==='year'?'numeric':'text'} value={draft[key]} onChange={e=>setDraft(d=>({...d,[key]:e.target.value}))} className="w-full min-w-0 bg-gray-800 p-2 rounded" /></label>)}
-          </fieldset>
-          <div className="flex gap-2"><button disabled={saving} className="flex-1 bg-blue-600 p-2 rounded">{saving?'Salvando…':'Salvar'}</button><button type="button" disabled={saving} onClick={()=>setDraft(null)} className="flex-1 bg-gray-700 p-2 rounded">Cancelar</button></div>
-        </form>}
-        {!draft && <button disabled={saving} onClick={add} className="w-full bg-blue-600 p-2 rounded text-sm">ADICIONAR VEÍCULO</button>}
+        {actionMode && <p role="status" className="text-center text-sm text-gray-300">Toque no veículo que deseja {actionMode==='edit'?'editar':'apagar'}.</p>}
+        <div className="flex items-center justify-center gap-3 border-t border-gray-800 pt-2">
+          <button type="button" disabled={saving||!!draft} onClick={add} aria-label="Adicionar veículo" title="Adicionar veículo" className="px-3 text-blue-400 text-3xl disabled:opacity-50">+</button>
+          <button type="button" disabled={saving||!!draft||!rows.length} onClick={()=>setActionMode(mode=>mode==='edit'?null:'edit')} aria-label="Editar veículo" aria-pressed={actionMode==='edit'} title="Editar veículo" className="px-3 text-blue-400 text-2xl disabled:opacity-50">✏️</button>
+          {user.isAdmin && <button type="button" disabled={saving||!!draft||!rows.length} onClick={()=>setActionMode(mode=>mode==='delete'?null:'delete')} aria-label="Apagar veículo" aria-pressed={actionMode==='delete'} title="Apagar veículo" className="px-3 text-red-400 text-2xl disabled:opacity-50">🗑️</button>}
+        </div>
         {removing && <div role="alertdialog" aria-modal="true" className="bg-gray-800 p-3 rounded space-y-3"><p>Remover o veículo {removing.plate}?</p><div className="flex gap-2"><button disabled={saving} onClick={()=>setRemoving(null)} className="flex-1 bg-gray-700 p-2 rounded">CANCELAR</button><button disabled={saving} onClick={remove} className="flex-1 bg-red-600 p-2 rounded">EXCLUIR</button></div></div>}
       </div>
     </div>
@@ -991,7 +1056,7 @@ function App() {
       <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
         <button type="button" onClick={()=>setShowGeneral(true)} className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative flex flex-col" aria-label="Abrir caráter geral">
           <span className="w-full text-center font-semibold text-xs leading-tight break-words">CARÁTER GERAL</span>
-          <span aria-hidden="true" className="w-full flex items-center justify-center text-3xl" style={{aspectRatio:'3 / 4'}}>🏍️</span>
+          <GeneralVehiclesPreview user={user} />
         </button>
         {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
