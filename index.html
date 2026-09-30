@@ -56,6 +56,9 @@ firebase.initializeApp({
 });
 </script>
 <script src="access-control.js"></script>
+<script src="record-guard.js"></script>
+<script src="location.js"></script>
+<script src="general-vehicles.js"></script>
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
 
@@ -63,6 +66,8 @@ const { useState, useEffect, useRef } = React;
 
 const auth = firebase.auth();
 const db = firebase.firestore();
+const recordGuard = ZebrolRecordGuard.create(db,dataOwner,maySync);
+const generalVehicles=ZebrolGeneralVehicles.create(db,dataOwner,maySync,()=>auth.currentUser?.uid===ZEBROL_ADMIN_UID,()=>navigator.onLine);
 
 async function compressPhoto(file) {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
@@ -233,33 +238,16 @@ async function syncPending(uid) {
     const entries = await offline.getPending(uid);
     for (const entry of entries) {
       if (!navigator.onLine || !maySync(uid)) break;
+      if(entry.duplicateId) continue;
       try {
-        const refs = photoRefs(uid, entry.id);
-        // Stable document ID + token make retries safe after a lost acknowledgement
-        // or simultaneous sends by two browser tabs.
-        await db.runTransaction(async tx => {
-          if (!maySync(uid)) throw new Error('Acesso não autorizado.');
-          const existing = await tx.get(refs.item);
-          if (existing.exists) {
-            if (existing.data()._creationToken !== entry.token) throw new Error('Conflito de cadastro. O envio permanece pendente.');
-            return;
-          }
-          if (entry.item.ownerId) {
-            const owner = await tx.get(photoRefs(uid, entry.item.ownerId).item);
-            if (!owner.exists || owner.data().type === 'vehicle') throw new Error('O proprietário ainda não está disponível. O veículo permanece pendente.');
-          }
-          tx.set(refs.item, { ...entry.item, _creationToken: entry.token });
-          if (entry.image) {
-            tx.set(refs.full, { image: entry.image, version: entry.item.photoVersion });
-            tx.set(refs.thumb, { image: entry.thumbnail, version: entry.item.photoVersion });
-          }
-        });
+        await recordGuard.save({uid,id:entry.id,payload:entry.item,image:entry.image,thumbnail:entry.thumbnail,token:entry.token});
         // Thumbnail caching is optional and must not prevent acknowledgement.
         await offline.putThumb(uid,entry.id,entry.item.photoVersion,entry.thumbnail).catch(() => {});
         await offline.confirm(entry);
         announceOfflineChange();
       } catch (error) {
-        await offline.setPendingError(uid,entry.id,saveErrorMessage(error));
+        await offline.setPendingError(uid,entry.id,saveErrorMessage(error),error.duplicate?.id || '');
+        if(error.code==='duplicate-person') offlineChanges.dispatchEvent(new CustomEvent('duplicate',{detail:{existing:error.duplicate,pendingId:entry.id,uid}}));
         announceOfflineChange();
         if (!navigator.onLine || ['unavailable','unauthenticated','permission-denied'].includes(error.code)) break;
       }
@@ -348,6 +336,15 @@ function AccessPanel({ onClose }) {
   const [error,setError] = useState('');
   const [loading,setLoading] = useState(true);
   const [busy,setBusy] = useState('');
+  const [deleteRequest,setDeleteRequest] = useState(null);
+  const deleteLock=useRef(false);
+  const removeRequest = async () => {
+    if(!deleteRequest || deleteLock.current || busy)return;
+    deleteLock.current=true;setBusy(deleteRequest.id);setError('');
+    try{await deleteDeviceRequest(deleteRequest.id);setDeleteRequest(null);}
+    catch(e){setError(e.message);setDeleteRequest(null);}
+    finally{deleteLock.current=false;setBusy('');}
+  };
   useEffect(()=>deviceRequests().onSnapshot(snap=>{
     setRequests(snap.docs.map(d=>({...d.data(),id:d.id})).sort((a,b)=>a.name.localeCompare(b.name,'pt-BR')));
     setLoading(false); setError('');
@@ -365,6 +362,15 @@ function AccessPanel({ onClose }) {
     try{await changeDeviceAccess(row.id,status);}catch(e){setError(e.message);}finally{setBusy('');}
   };
   return <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:100}}>
+    {deleteRequest && <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:115}}>
+      <div role="alertdialog" aria-modal="true" aria-labelledby="delete-request-title" className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full space-y-4 text-center">
+        <p id="delete-request-title">Deseja excluir definitivamente este pedido de acesso?</p>
+        <div className="flex gap-4">
+          <button disabled={!!busy} onClick={()=>setDeleteRequest(null)} className="flex-1 bg-gray-700 p-2 rounded-xl">CANCELAR</button>
+          <button disabled={!!busy} onClick={removeRequest} className="flex-1 bg-red-600 p-2 rounded-xl disabled:opacity-50">EXCLUIR</button>
+        </div>
+      </div>
+    </div>}
     <div role="dialog" aria-modal="true" aria-labelledby="access-title" className="mobile-panel bg-gray-900 rounded-xl max-w-md p-4 gap-4">
       <div className="flex items-center justify-between"><h2 id="access-title" className="text-xl font-bold">Acessos</h2><button autoFocus aria-label="Fechar acessos" onClick={onClose} className="text-red-400 text-2xl px-2">×</button></div>
       {error && <p role="alert" className="text-red-300">{error}</p>}
@@ -379,6 +385,7 @@ function AccessPanel({ onClose }) {
             <div className="flex flex-wrap gap-3">
               {status!=='approved' && <button disabled={!!busy} onClick={()=>change(row,'approved')} className="text-green-400 disabled:opacity-50">Autorizar</button>}
               {status==='pending' && <button disabled={!!busy} onClick={()=>change(row,'rejected')} className="text-red-400 disabled:opacity-50">Recusar</button>}
+              {['blocked','rejected'].includes(status) && <button disabled={!!busy} aria-label={'Excluir pedido de '+row.name} onClick={()=>setDeleteRequest(row)} className="text-red-400 disabled:opacity-50">🗑️</button>}
               {status==='approved' && <button disabled={!!busy} onClick={()=>change(row,'blocked')} className="text-red-400 disabled:opacity-50">Bloquear</button>}
             </div>
           </div>)}
@@ -413,10 +420,103 @@ function ZebrolTitle() {
   </h1>;
 }
 
+function GeneralVehiclesPanel({user,onClose}) {
+  const [rows,setRows]=useState([]);
+  const [draft,setDraft]=useState(null);
+  const [removing,setRemoving]=useState(null);
+  const [error,setError]=useState('');
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const busy=useRef(false);
+  useEffect(()=>{
+    let active=true,serverArrived=false;
+    const key=user.uid+'~general';
+    offline.getList(key).then(data=>{if(active&&!serverArrived){setRows(data);if(!navigator.onLine)setLoading(false);}}).catch(()=>{});
+    const unsub=generalVehicles.collection().onSnapshot({includeMetadataChanges:true},snap=>{
+      if(!active || snap.metadata.hasPendingWrites || snap.metadata.fromCache)return;
+      serverArrived=true;
+      const data=snap.docs.map(doc=>({...doc.data(),id:doc.id})).sort((a,b)=>a.plate.localeCompare(b.plate,'pt-BR'));
+      setRows(data);setLoading(false);setError('');
+      offline.putList(key,data).catch(()=>{});
+    },()=>{if(active){setLoading(false);setError('Não foi possível atualizar a lista. Confira sua conexão e as regras do Firebase.');}});
+    const disconnected=()=>{if(active)setLoading(false);};window.addEventListener('offline',disconnected);
+    return()=>{active=false;unsub();window.removeEventListener('offline',disconnected);};
+  },[user.uid]);
+  useEffect(()=>{
+    const previous=document.body.style.overflow;document.body.style.overflow='hidden';
+    return()=>{document.body.style.overflow=previous;};
+  },[]);
+  const edit=row=>{if(busy.current)return;setError('');setDraft({...row,expectedVersion:row.version});};
+  const add=()=>{if(busy.current)return;setError('');setDraft({id:generalVehicles.collection().doc().id,plate:'',model:'',color:'',year:'',expectedVersion:null});};
+  const commit=async()=>{
+    if(!draft || busy.current)return;
+    busy.current=true;setSaving(true);setError('');
+    try{await generalVehicles.save(user.uid,draft.id,draft,draft.expectedVersion);setDraft(null);}
+    catch(e){setError(e.message);}finally{busy.current=false;setSaving(false);}
+  };
+  const remove=async()=>{
+    if(!removing || busy.current)return;
+    busy.current=true;setSaving(true);setError('');
+    try{await generalVehicles.remove(user.uid,removing.id,removing.version);setRemoving(null);if(draft?.id===removing.id)setDraft(null);}
+    catch(e){setError(e.message);setRemoving(null);}finally{busy.current=false;setSaving(false);}
+  };
+  return <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:90}}>
+    <div role="dialog" aria-modal="true" aria-labelledby="general-title" className="mobile-panel bg-gray-900 rounded max-w-xl">
+      <div className="mobile-header relative"><h2 id="general-title" className="w-full text-center font-semibold pr-6">CARÁTER GERAL</h2><button aria-label="Fechar caráter geral" disabled={saving} onClick={onClose} className="absolute right-2 text-red-400 text-2xl px-2">×</button></div>
+      <div className="mobile-scroll p-3 space-y-3">
+        {error && <p role="alert" className="text-red-300 text-sm">{error}</p>}
+        {loading && <p role="status" className="text-gray-400 text-sm">Carregando…</p>}
+        <table className="w-full text-xs sm:text-sm" style={{tableLayout:'fixed',borderCollapse:'collapse'}}>
+          <thead><tr>{['PLACA','MODELO','COR','ANO'].map(label=><th key={label} className="text-left p-1 font-semibold" style={{borderBottom:'1px solid rgba(156,163,175,0.15)'}}>{label}</th>)}</tr></thead>
+          <tbody>{rows.map(row=><tr key={row.id}>
+            {[row.plate,row.model,row.color].map((value,i)=><td key={i} className="align-top p-1 break-words" style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>{value}</td>)}
+            <td className="align-top p-1" style={{borderBottom:'1px solid rgba(156,163,175,0.10)'}}><span>{row.year}</span><div className="flex flex-wrap gap-1">
+              <button disabled={saving} aria-label={'Editar veículo '+row.plate} onClick={()=>edit(row)} className="text-blue-400 px-1">✏️</button>
+              {user.isAdmin && <button disabled={saving} aria-label={'Remover veículo '+row.plate} onClick={()=>{setError('');setRemoving(row);}} className="text-red-400 px-1">🗑️</button>}
+            </div></td>
+          </tr>)}</tbody>
+        </table>
+        {!loading&&!rows.length && <p className="text-gray-400 text-sm">Nenhum veículo cadastrado.</p>}
+        {draft && <form onSubmit={event=>{event.preventDefault();commit();}} className="space-y-2">
+          <fieldset disabled={saving} className="grid grid-cols-2 gap-2">
+            {[['plate','PLACA',20],['model','MODELO',120],['color','COR',60],['year','ANO',4]].map(([key,label,max])=><label key={key} className="text-xs">{label}<input autoFocus={key==='plate'} required={key==='plate'||key==='model'} maxLength={max} inputMode={key==='year'?'numeric':'text'} value={draft[key]} onChange={e=>setDraft(d=>({...d,[key]:e.target.value}))} className="w-full min-w-0 bg-gray-800 p-2 rounded" /></label>)}
+          </fieldset>
+          <div className="flex gap-2"><button disabled={saving} className="flex-1 bg-blue-600 p-2 rounded">{saving?'Salvando…':'Salvar'}</button><button type="button" disabled={saving} onClick={()=>setDraft(null)} className="flex-1 bg-gray-700 p-2 rounded">Cancelar</button></div>
+        </form>}
+        {!draft && <button disabled={saving} onClick={add} className="w-full bg-blue-600 p-2 rounded text-sm">ADICIONAR VEÍCULO</button>}
+        {removing && <div role="alertdialog" aria-modal="true" className="bg-gray-800 p-3 rounded space-y-3"><p>Remover o veículo {removing.plate}?</p><div className="flex gap-2"><button disabled={saving} onClick={()=>setRemoving(null)} className="flex-1 bg-gray-700 p-2 rounded">CANCELAR</button><button disabled={saving} onClick={remove} className="flex-1 bg-red-600 p-2 rounded">EXCLUIR</button></div></div>}
+      </div>
+    </div>
+  </div>;
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [accessStatus,setAccessStatus] = useState('checking');
   const [showAccess,setShowAccess] = useState(false);
+  const [showGeneral,setShowGeneral] = useState(false);
+  const [duplicate,setDuplicate] = useState(null);
+  useEffect(()=>{
+    const show=e=>{if(e.detail.uid===user?.uid)setDuplicate(e.detail);};
+    offlineChanges.addEventListener('duplicate',show);
+    return ()=>offlineChanges.removeEventListener('duplicate',show);
+  },[user]);
+  const showPending = async item => {
+    if(item._duplicateId) {
+      let existing=items.find(row=>row.id===item._duplicateId);
+      if(!existing && navigator.onLine) {
+        try { const snap=await photoRefs(user.uid,item._duplicateId).item.get({source:'server'}); if(snap.exists)existing={...snap.data(),id:snap.id}; }
+        catch(e){window.alert(saveErrorMessage(e));return;}
+      }
+      setDuplicate({existing,pendingId:item.id}); return;
+    }
+    if(item._pendingError)window.alert(item._pendingError);
+    if(navigator.onLine)syncPending(user.uid);
+  };
+  const cancelDuplicate = async () => {
+    try { if(duplicate?.pendingId) { await offline.discardPending(user.uid,duplicate.pendingId); announceOfflineChange(); } setDuplicate(null); }
+    catch(e){window.alert(saveErrorMessage(e));}
+  };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -500,6 +600,8 @@ function App() {
     mother: "",
     infopem: "",
     address: "",
+    latitude: null,
+    longitude: null,
     description: ""
   };
 
@@ -510,7 +612,24 @@ function App() {
   const [saveStatus, setSaveStatus] = useState('');
   const savingLock = useRef(false);
   const imageLock = useRef(false);
-  const busy = saving || processingImage;
+  const [locating,setLocating] = useState(false);
+  const [locationMessage,setLocationMessage] = useState('');
+  const locationSequence = useRef(0);
+  const locationLock = useRef(false);
+  useEffect(()=>{locationSequence.current++;locationLock.current=false;setLocating(false);setLocationMessage('');},[showForm,editingId,formType,user]);
+  const captureLocation = async () => {
+    if(locationLock.current || savingLock.current)return;
+    locationLock.current=true;setLocating(true);setLocationMessage('');
+    const sequence=++locationSequence.current;
+    try {
+      const coords=await ZebrolLocation.current();
+      if(sequence!==locationSequence.current)return;
+      setForm(previous=>({...previous,...coords}));
+      setLocationMessage('Localização capturada. Alterar o endereço remove esse ponto; preencha o endereço antes de tocar em 📍.');
+    }catch(error){if(sequence===locationSequence.current)setLocationMessage(error.message);}
+    finally {if(sequence===locationSequence.current){locationLock.current=false;setLocating(false);}}
+  };
+  const busy = saving || processingImage || locating;
   const [crop, setCrop] = useState(null);
   const cropLock = useRef(false);
   const cropCanvas = useRef(null);
@@ -623,7 +742,7 @@ function App() {
   }, [selected, showForm, confirmDelete]);
 
   useEffect(() => watchAccess(state => {
-    setAccessStatus(state.status); setUser(state.user); setShowAccess(false);
+    setAccessStatus(state.status); setUser(state.user); setShowAccess(false); setDuplicate(null); setShowGeneral(false);
   }), []);
 
   useEffect(() => {
@@ -681,6 +800,7 @@ function App() {
     const { name, value, files } = e.target;
     if (savingLock.current) return;
     if (name !== 'image') {
+      if(name==='address'){locationSequence.current++;locationLock.current=false;setLocating(false);setLocationMessage('');setForm(f=>ZebrolLocation.editAddress(f,value));return;}
       setForm(f => ({ ...f, [name]: value }));
       return;
     }
@@ -719,7 +839,7 @@ function App() {
   };
 
   const saveItem = async () => {
-    if (savingLock.current || imageLock.current) return;
+    if (savingLock.current || imageLock.current || locationLock.current) return;
     if (cropLock.current) { setFormError('Confirme ou cancele o ajuste da foto antes de salvar.'); return; }
     setFormError('');
     if (!user) { setFormError('Entre novamente para salvar.'); return; }
@@ -729,6 +849,7 @@ function App() {
     const payload = formType === 'vehicle'
       ? { type: 'vehicle', name: vehicleForm.model.trim(), model: vehicleForm.model.trim(), ownerName: vehicleForm.ownerName.trim(), ownerId: vehicleForm.ownerId || '', alert: vehicleForm.alert.trim(), description: form.description, image: form.image }
       : Object.fromEntries(Object.keys(emptyForm).map(key => [key, String(form[key] ?? '')]));
+    if(formType!=='vehicle')Object.assign(payload,ZebrolLocation.point(form)||{latitude:null,longitude:null});
     // Conservative ceiling leaves room for Firestore document metadata.
     if (new TextEncoder().encode(JSON.stringify(payload)).length > 700 * 1024) {
       setFormError('O cadastro está muito grande. Escolha novamente a foto para reduzi-la ou diminua os textos.');
@@ -742,6 +863,12 @@ function App() {
     }, 15000);
     try {
       const ref = db.collection('users').doc(dataOwner(user.uid)).collection('items');
+      const localDuplicate=ZebrolRecordGuard.findDuplicate(payload,navigator.onLine ? items.filter(row=>row._pending) : items,editingId);
+      if(localDuplicate){setDuplicate({existing:localDuplicate});return;}
+      if(navigator.onLine) {
+        const found=await recordGuard.check(payload,editingId);
+        if(found){setDuplicate({existing:found});return;}
+      }
       if (!editingId) {
         const uid = user.uid;
         const id = ref.doc().id;
@@ -762,31 +889,20 @@ function App() {
         syncPending(uid);
         return;
       }
-      const target = editingId ? ref.doc(editingId) : ref.doc();
-      const refs = photoRefs(user.uid, target.id);
-      const image = payload.image;
+      const image=payload.image;
       delete payload.image;
-      const batch = db.batch();
-      if (image) {
-        const thumbnail = await makeThumbnail(image);
-        const version = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
-        batch.set(refs.full, { image, version });
-        batch.set(refs.thumb, { image: thumbnail, version });
-        payload.hasPhoto = true;
-        payload.photoVersion = version;
-      } else {
-        payload.hasPhoto = false;
-        payload.photoVersion = '';
-      }
-      if (editingId) batch.update(target, { ...payload, image: firebase.firestore.FieldValue.delete() });
-      else batch.set(target, payload);
-      await batch.commit();
+      const thumbnail=image ? await makeThumbnail(image) : '';
+      payload.hasPhoto=!!image;
+      payload.photoVersion=image ? crypto.randomUUID() : '';
+      payload.image=firebase.firestore.FieldValue.delete();
+      await recordGuard.save({uid:user.uid,id:editingId,payload,image,thumbnail,editing:true});
       setForm(emptyForm);
       setEditingId(null);
       setShowForm(false);
       setSelected(null);
     } catch (error) {
-      setFormError(saveErrorMessage(error));
+      if(error.code==='duplicate-person')setDuplicate({existing:error.duplicate});
+      else setFormError(saveErrorMessage(error));
     } finally {
       clearTimeout(reminder);
       savingLock.current = false;
@@ -848,6 +964,7 @@ function App() {
   return (
     <div className="min-h-screen p-6 space-y-6">
       <AccessWatermark user={user} />
+      {showGeneral && <GeneralVehiclesPanel user={user} onClose={()=>setShowGeneral(false)} />}
       {user.isAdmin && <button aria-label="Gerenciar acessos" title="Acessos" onClick={()=>setShowAccess(true)} className="absolute top-4 left-3 text-2xl p-2">👥</button>}
       {user.isAdmin && showAccess && <AccessPanel onClose={()=>setShowAccess(false)} />}
       <ZebrolTitle />
@@ -870,10 +987,12 @@ function App() {
 
       <section aria-labelledby="alerta-geral-heading" className="max-w-md mx-auto space-y-4">
         <h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2>
-        {!items.some(item => item.alertaGeral === true) ? (
-          <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>
-        ) : (
+        {!items.some(item => item.alertaGeral === true) && <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>}
       <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
+        <button type="button" onClick={()=>setShowGeneral(true)} className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative flex flex-col" aria-label="Abrir caráter geral">
+          <span className="w-full text-center font-semibold text-xs leading-tight break-words">CARÁTER GERAL</span>
+          <span aria-hidden="true" className="w-full flex items-center justify-center text-3xl" style={{aspectRatio:'3 / 4'}}>🏍️</span>
+        </button>
         {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
             key={item.id}
@@ -884,11 +1003,10 @@ function App() {
             <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
             {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
             <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
-            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); if(item._pendingError) window.alert(item._pendingError); if(navigator.onLine) syncPending(user.uid); }}>!</button>}
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); showPending(item); }}>!</button>}
           </div>
         ))}
       </div>
-        )}
       </section>
 
       <section aria-labelledby="todos-heading" className="max-w-md mx-auto space-y-4">
@@ -904,7 +1022,7 @@ function App() {
             <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
             {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
             <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
-            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); if(item._pendingError) window.alert(item._pendingError); if(navigator.onLine) syncPending(user.uid); }}>!</button>}
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); showPending(item); }}>!</button>}
           </div>
         ))}
       </div>
@@ -941,7 +1059,7 @@ function App() {
             <p><b>Nasc:</b> {selected.birth}</p>
             <p><b>Mãe:</b> {selected.mother}</p>
             <p><b>Infopem:</b> {selected.infopem}</p>
-            <p><b>Endereço:</b> {selected.address}</p>
+            <p><b>Endereço:</b> {ZebrolLocation.mapsUrl(selected) ? <a href={ZebrolLocation.mapsUrl(selected)} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline break-words">{selected.address || '📍 Localização'}</a> : selected.address}</p>
             </>}
             <p className="whitespace-pre-wrap"><b>Descrição:</b> {selected.description}</p>
             {selected.type !== 'vehicle' && items.some(v => v.type === 'vehicle' && v.ownerId === selected.id) && <div className="pt-3 space-y-2">
@@ -997,6 +1115,14 @@ function App() {
         </div>
       )}
 
+      {duplicate && <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:110}}>
+        <div role="alertdialog" aria-modal="true" aria-labelledby="duplicate-title" className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full space-y-4 text-center">
+          <h2 id="duplicate-title" className="font-bold">POSSÍVEL CADASTRO DUPLICADO</h2>
+          <p>Esta pessoa já pode estar cadastrada.</p>
+          <button disabled={!duplicate.existing} title={duplicate.existing ? undefined : 'Conecte à internet para consultar o cadastro existente.'} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50" onClick={()=>{const existing=duplicate.existing;if(!existing)return;setDuplicate(null);setShowForm(false);openDetails(existing);}}>VER CADASTRO EXISTENTE</button>
+          <button className="w-full bg-gray-700 p-2 rounded" onClick={cancelDuplicate}>CANCELAR</button>
+        </div>
+      </div>}
       {user.isAdmin && confirmDelete && (
         <div className="mobile-overlay bg-black bg-opacity-80" style={{ zIndex: 80 }}>
           <div className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full max-h-full overflow-y-auto space-y-4 text-center">
@@ -1109,7 +1235,12 @@ function App() {
             <input className="w-full bg-gray-800 p-2 rounded" name="birth" placeholder="Data de nascimento" value={form.birth} onChange={handleChange} />
             <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange} />
             <input className="w-full bg-gray-800 p-2 rounded" name="infopem" placeholder="Infopem" value={form.infopem} onChange={handleChange} />
-            <input className="w-full bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={captureLocation} disabled={locating || busy} aria-label="Usar localização atual" title="Usar localização atual" className="p-2 text-xl disabled:opacity-50">📍</button>
+              <input className="w-full min-w-0 bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
+            </div>
+            {locating && <p role="status" className="text-sm text-gray-400">Obtendo localização…</p>}
+            {locationMessage && <p role="status" className="text-sm text-gray-400">{locationMessage}</p>}
             </>}
             <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
 
