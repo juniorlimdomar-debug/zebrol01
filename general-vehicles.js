@@ -2,7 +2,7 @@
   function values(input) {
     const result={plate:String(input.plate||'').trim().toUpperCase().replace(/\s+/g,''),model:String(input.model||'').trim(),color:String(input.color||'').trim(),year:String(input.year||'').trim(),date:String(input.date||'').trim()};
     if(!result.plate || !result.model)throw new Error('Informe a placa e o modelo.');
-    if(result.plate.length>20 || result.model.length>120 || result.color.length>60 || !/^\d{0,4}$/.test(result.year) || (result.year && result.year.length!==4) || !/^(\d{4}-\d{2}-\d{2})?$/.test(result.date))throw new Error('Confira os campos. O ano deve ter quatro dígitos e a data precisa ser válida, ou os campos podem ficar vazios.');
+    if(result.plate.length>20 || result.model.length>120 || result.color.length>60 || result.year.length>20 || result.date.length>30)throw new Error('Confira os campos informados.');
     return result;
   }
   function create(db,owner,authorize,isAdmin,online) {
