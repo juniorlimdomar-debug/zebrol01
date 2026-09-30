@@ -421,7 +421,7 @@ function ZebrolTitle() {
 }
 
 function formatGeneralVehicleDate(value) {
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')))return '';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')))return String(value||'');
   const [year,month,day]=value.split('-');
   return `${day}/${month}/${year}`;
 }
@@ -521,21 +521,21 @@ function GeneralVehiclesPanel({user,onClose}) {
           </tr>)}
           {draft && <>
             <tr>{[
-              ['plate','Placa',20,'text'],['model','Modelo',120,'text'],['color','Cor',60,'text'],['year','Ano',4,'numeric'],['date','Data',10,'date']
-            ].map(([key,label,max,type])=><td key={key} className="align-top p-1" style={{borderBottom:'1px solid rgba(156,163,175,0.10)'}}>
+              ['plate','Placa',20],['model','Modelo',120],['color','Cor',60],['year','Ano',20],['date','Data',30]
+            ].map(([key,label,max])=><td key={key} className="align-top p-1" style={{borderBottom:'1px solid rgba(156,163,175,0.10)'}}>
               <input
-                autoFocus={key==='plate'}
                 required={key==='plate'||key==='model'}
                 aria-label={label}
                 title={label}
-                type={type==='date'?'date':'text'}
-                inputMode={type==='numeric'?'numeric':'text'}
+                type="text"
+                inputMode="text"
                 maxLength={max}
                 disabled={saving}
                 value={draft[key]||''}
                 onChange={e=>setDraft(d=>({...d,[key]:e.target.value}))}
                 onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commit();}}}
-                className="w-full min-w-0 bg-gray-800 p-1 rounded text-[10px] sm:text-sm"
+                className="w-full min-w-0 bg-gray-800 p-1 rounded"
+                style={{fontSize:'16px'}}
               />
             </td>)}</tr>
             <tr><td colSpan="5" className="pt-2"><div className="flex gap-2"><button type="button" disabled={saving} onClick={commit} className="flex-1 bg-blue-600 p-2 rounded">{saving?'Salvando…':'Salvar'}</button><button type="button" disabled={saving} onClick={()=>setDraft(null)} className="flex-1 bg-gray-700 p-2 rounded">Cancelar</button></div></td></tr>
