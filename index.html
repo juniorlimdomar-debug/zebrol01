@@ -60,7 +60,7 @@ firebase.initializeApp({
 <script src="location.js"></script>
 <script src="general-vehicles.js"></script>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 
 
@@ -426,7 +426,24 @@ function formatGeneralVehicleDate(value) {
   return `${day}/${month}/${year}`;
 }
 
-function GeneralVehiclesPreview({user}) {
+// Pesquisa local: somente campos textuais explicitamente permitidos.
+function normalizeSearch(value) {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+}
+function searchText(row,general=false) {
+  const fields=general ? ['plate','model','color','year','date'] :
+    row.type==='vehicle' ? ['name','model','ownerName','alert','description'] :
+    ['name','vulgo','faction','cpf','birth','mother','infopem','address','description'];
+  const values=fields.map(field=>normalizeSearch(row[field]));
+  if(general)values.push(normalizeSearch(formatGeneralVehicleDate(row.date)));
+  return values.join(' ').replace(/[.\s/\-]+/g,'');
+}
+function searchWords(query) {
+  return normalizeSearch(query).trim().split(/\s+/).map(word=>word.replace(/[./\-]/g,'')).filter(Boolean);
+}
+function matchesSearch(text,words) { return words.every(word=>text.includes(word)); }
+
+function GeneralVehiclesPreview({user,search,onOpen}) {
   const [rows,setRows]=useState([]);
   const [loading,setLoading]=useState(true);
   useEffect(()=>{
@@ -442,16 +459,22 @@ function GeneralVehiclesPreview({user}) {
     const disconnected=()=>{if(active)setLoading(false);};window.addEventListener('offline',disconnected);
     return()=>{active=false;unsub();window.removeEventListener('offline',disconnected);};
   },[user.uid]);
-  const visible=rows.slice(0,4);
-  return <span aria-live="polite" className="w-full flex-1 flex flex-col justify-center overflow-hidden px-1 py-1 text-left" style={{aspectRatio:'3 / 4'}}>
+  const indexed=useMemo(()=>rows.map(row=>({row,text:searchText(row,true)})),[rows]);
+  const words=useMemo(()=>searchWords(search),[search]);
+  const matching=useMemo(()=>indexed.filter(entry=>matchesSearch(entry.text,words)).map(entry=>entry.row),[indexed,words]);
+  const visible=words.length ? matching : rows.slice(0,4);
+  if(words.length&&!matching.length)return null;
+  return <button type="button" onClick={onOpen} className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative flex flex-col" aria-label="Abrir caráter geral">
+    <span className="w-full text-center font-semibold text-xs leading-tight break-words">CARÁTER GERAL</span>
+    <span aria-live="polite" className="w-full flex-1 flex flex-col justify-center overflow-hidden px-1 py-1 text-left" style={{aspectRatio:'3 / 4',...(words.length?{overflowY:'auto'}:{})}}>
     {loading&&!rows.length ? <span className="text-center text-[10px] text-gray-400">Carregando…</span> : !rows.length ? <span className="text-center text-[10px] text-gray-400">Nenhum veículo</span> : <>
       {visible.map(row=><span key={row.id} className="block border-b border-gray-800 py-1 min-w-0">
         <span className="block text-[10px] font-bold truncate">{row.plate}</span>
         <span className="block text-[9px] text-gray-400 truncate">{row.model}</span>
       </span>)}
-      {rows.length>visible.length && <span className="block pt-1 text-center text-[9px] text-gray-400">+{rows.length-visible.length} veículo{rows.length-visible.length===1?'':'s'}</span>}
+      {!words.length && rows.length>visible.length && <span className="block pt-1 text-center text-[9px] text-gray-400">+{rows.length-visible.length} veículo{rows.length-visible.length===1?'':'s'}</span>}
     </>}
-  </span>;
+  </span></button>;
 }
 
 function GeneralVehiclesPanel({user,onClose}) {
@@ -1017,12 +1040,11 @@ function App() {
     }
   };
 
-  const filtered = items
-    .filter(i =>
-      [i.name, i.vulgo, i.faction, i.ownerName]
-        .some(v => v?.toLowerCase().includes(search.toLowerCase()))
-    )
-    .sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''),"pt-BR",{sensitivity:"base"}));
+  const indexedItems=useMemo(()=>items.map(row=>({row,text:searchText(row)})),[items]);
+  const searchTokens=useMemo(()=>searchWords(search),[search]);
+  const filtered=useMemo(()=>indexedItems
+    .filter(entry=>matchesSearch(entry.text,searchTokens)).map(entry=>entry.row)
+    .sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''),"pt-BR",{sensitivity:"base"})),[indexedItems,searchTokens]);
 
   if (!user) return <AccessGate status={accessStatus} />;
 
@@ -1044,7 +1066,7 @@ function App() {
       {searchOpen && (
         <input
           className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
-          placeholder="Pesquisar nome, vulgo ou facção"
+          placeholder="Pesquisar qualquer informação"
           value={search}
           onChange={e=>setSearch(e.target.value)}
         />
@@ -1054,10 +1076,7 @@ function App() {
         <h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2>
         {!items.some(item => item.alertaGeral === true) && <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>}
       <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
-        <button type="button" onClick={()=>setShowGeneral(true)} className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative flex flex-col" aria-label="Abrir caráter geral">
-          <span className="w-full text-center font-semibold text-xs leading-tight break-words">CARÁTER GERAL</span>
-          <GeneralVehiclesPreview user={user} />
-        </button>
+        <GeneralVehiclesPreview user={user} search={search} onOpen={()=>setShowGeneral(true)} />
         {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
             key={item.id}
