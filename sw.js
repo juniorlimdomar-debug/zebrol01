@@ -1,5 +1,5 @@
-const CACHE = 'zebrol-shell-offline-v11';
-const FILES = ['index.html','general-vehicles.js','location.js','record-guard.js','access-control.js','offline-store.js','offline-register.js','manifest.webmanifest','icon-192.png','icon-512.png',
+const CACHE = 'zebrol-shell-offline-v15';
+const FILES = ['index.html','notifications.js','service-information.js','general-vehicles.js','location.js','record-guard.js','access-control.js','offline-store.js','offline-register.js','manifest.webmanifest','icon-192.png','icon-512.png',
   'vendor/tailwind.js','vendor/react.js','vendor/react-dom.js','vendor/babel.js',
   'vendor/firebase-app.js','vendor/firebase-auth.js','vendor/firebase-firestore.js'];
 const urls = FILES.map(file => new URL(file,self.registration.scope).href);

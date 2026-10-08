@@ -16,7 +16,7 @@
   function duplicateError(item) {
     return Object.assign(new Error('POSSÍVEL CADASTRO DUPLICADO\nEsta pessoa já pode estar cadastrada.'),{code:'duplicate-person',duplicate:item});
   }
-  function create(db, owner, authorize) {
+  function create(db, owner, authorize, notify) {
     const collection = () => db.collection('users').doc(owner()).collection('items');
     const control = () => db.collection('users').doc(owner()).collection('controls').doc('personRevision');
     const revision = snap => snap.exists ? snap.data().revision : 0;
@@ -28,6 +28,7 @@
     async function save({uid,id,payload,image,thumbnail,token,editing=false}) {
       const item=collection().doc(id), full=item.collection('photos').doc('full'), thumb=item.collection('photos').doc('thumb');
       const person=payload.type!=='vehicle';
+      const writeNotification=notify ? notify(editing?'edited':'created',id,payload) : null;
       for(let attempt=0;attempt<8;attempt++) {
         if(!authorize(uid))throw new Error('Acesso não autorizado.');
         // Read the revision BEFORE the collection. The transaction validates
@@ -61,6 +62,7 @@
               tx.set(thumb,{image:thumbnail,version:payload.photoVersion});
             }
             if(person)tx.set(control(),{revision:baseline+1,itemId:id});
+            if(writeNotification)writeNotification(tx);
           });
         } catch(error) { if(error.code!=='stale-person-scan')throw error; }
       }
