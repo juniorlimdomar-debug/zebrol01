@@ -36,6 +36,10 @@
   .detail-panel > .detail-close { padding: 0; height: 32px; min-height: 32px; }
   .detail-panel > .detail-close button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; line-height: 1; }
   .detail-text { margin-top: 8px; padding: 0 6px; }
+@media (min-width: 1024px) {
+  .desktop-catalog { max-width: none; width: 100%; }
+  .desktop-catalog-grid { max-width: none; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}
 </style>
 <meta name="theme-color" content="#000000" />
 <link rel="manifest" href="manifest.webmanifest" />
@@ -823,6 +827,23 @@ function App() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null); // ← ADICIONADO
 
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchInput = useRef(null);
+  const revealSearch = () => {
+    const input=searchInput.current;
+    if(!input)return;
+    input.focus({preventScroll:true});
+    input.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});
+  };
+  useEffect(()=>{
+    if(!searchOpen)return;
+    const frame=requestAnimationFrame(revealSearch);
+    return()=>cancelAnimationFrame(frame);
+  },[searchOpen]);
+  const toggleSearch = () => {
+    const rect=searchInput.current?.getBoundingClientRect();
+    if(searchOpen && rect && rect.top>=0 && rect.bottom<=window.innerHeight){setSearchOpen(false);return;}
+    if(searchOpen)revealSearch();else setSearchOpen(true);
+  };
   const [search, setSearch] = useState("");
 
   const emptyForm = {
@@ -1238,16 +1259,17 @@ function App() {
       {searchOpen && (
         <input
           className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+          ref={searchInput}
           placeholder="Pesquisar qualquer informação"
           value={search}
           onChange={e=>setSearch(e.target.value)}
         />
       )}
 
-      <section aria-labelledby="alerta-geral-heading" className="max-w-md mx-auto space-y-4">
+      <section aria-labelledby="alerta-geral-heading" className="desktop-catalog max-w-md mx-auto space-y-4">
         <div className="relative w-full"><h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2><ServiceInformation key={user.uid} user={user} /><Notifications key={user.uid+'~notifications'} user={user} items={items} onOpen={openDetails} /></div>
         {!items.some(item => item.alertaGeral === true) && <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>}
-      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
+      <div className="desktop-catalog-grid grid grid-cols-3 gap-2 max-w-md mx-auto">
         <GeneralVehiclesPreview user={user} search={search} onOpen={()=>setShowGeneral(true)} />
         {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
@@ -1265,9 +1287,9 @@ function App() {
       </div>
       </section>
 
-      <section aria-labelledby="todos-heading" className="max-w-md mx-auto space-y-4">
+      <section aria-labelledby="todos-heading" className="desktop-catalog max-w-md mx-auto space-y-4">
         <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS <span className="text-sm font-normal">{items.filter(item => item.alertaGeral !== true).length}</span></h2>
-      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
+      <div className="desktop-catalog-grid grid grid-cols-3 gap-2 max-w-md mx-auto">
         {filtered.filter(item => item.alertaGeral !== true).map(item=>(
           <div
             key={item.id}
@@ -1409,7 +1431,7 @@ function App() {
       {!selected && !showForm && (
         <>
           <button
-  onClick={()=>setSearchOpen(!searchOpen)}
+  onClick={toggleSearch}
   className="fixed bottom-6 left-6 text-2xl z-50">
   🔍
 </button>
