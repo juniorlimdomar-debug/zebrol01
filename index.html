@@ -36,10 +36,8 @@
   .detail-panel > .detail-close { padding: 0; height: 32px; min-height: 32px; }
   .detail-panel > .detail-close button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; line-height: 1; }
   .detail-text { margin-top: 8px; padding: 0 6px; }
-@media (min-width: 1024px) {
-  .desktop-catalog { max-width: none; width: 100%; }
-  .desktop-catalog-grid { max-width: none; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
-}
+.desktop-catalog { max-width: none; width: 100%; }
+.desktop-catalog-grid { max-width: none; width: 100%; grid-template-columns: repeat(auto-fill, minmax(min(calc((100% - 16px) / 3), 140px), 1fr)); }
 </style>
 <meta name="theme-color" content="#000000" />
 <link rel="manifest" href="manifest.webmanifest" />
@@ -1266,10 +1264,10 @@ function App() {
         />
       )}
 
-      <section aria-labelledby="alerta-geral-heading" className="desktop-catalog max-w-md mx-auto space-y-4">
+      <section aria-labelledby="alerta-geral-heading" className="desktop-catalog mx-auto space-y-4">
         <div className="relative w-full"><h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2><ServiceInformation key={user.uid} user={user} /><Notifications key={user.uid+'~notifications'} user={user} items={items} onOpen={openDetails} /></div>
         {!items.some(item => item.alertaGeral === true) && <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>}
-      <div className="desktop-catalog-grid grid grid-cols-3 gap-2 max-w-md mx-auto">
+      <div className="desktop-catalog-grid grid gap-2 mx-auto">
         <GeneralVehiclesPreview user={user} search={search} onOpen={()=>setShowGeneral(true)} />
         {filtered.filter(item => item.alertaGeral === true).map(item=>(
           <div
@@ -1287,9 +1285,9 @@ function App() {
       </div>
       </section>
 
-      <section aria-labelledby="todos-heading" className="desktop-catalog max-w-md mx-auto space-y-4">
+      <section aria-labelledby="todos-heading" className="desktop-catalog mx-auto space-y-4">
         <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS <span className="text-sm font-normal">{items.filter(item => item.alertaGeral !== true).length}</span></h2>
-      <div className="desktop-catalog-grid grid grid-cols-3 gap-2 max-w-md mx-auto">
+      <div className="desktop-catalog-grid grid gap-2 mx-auto">
         {filtered.filter(item => item.alertaGeral !== true).map(item=>(
           <div
             key={item.id}
@@ -1537,4 +1535,3 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
 </body>
 </html>
-
