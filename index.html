@@ -175,7 +175,7 @@ async function convertLegacyPhoto(uid, item) {
   });
 }
 
-function LazyThumbnail({ uid, item }) {
+const LazyThumbnail = React.memo(function LazyThumbnail({ uid, item }) {
   const host = useRef(null);
   const [visible, setVisible] = useState(false);
   const [image, setImage] = useState('');
@@ -212,7 +212,7 @@ function LazyThumbnail({ uid, item }) {
     {image && <img src={image} alt={item.name || 'Foto do cadastro'} loading="lazy" decoding="async" className="w-full h-full object-cover" />}
     {failed && <button className="w-full h-full text-sm" onClick={e => { e.stopPropagation(); setRetry(n => n + 1); }}>Recarregar foto</button>}
   </div>;
-}
+}, (a,b)=>a.uid===b.uid && a.item.id===b.item.id && a.item.name===b.item.name && a.item.image===b.item.image && a.item.hasPhoto===b.item.hasPhoto && a.item.photoVersion===b.item.photoVersion && a.item._pending===b.item._pending);
 
 
 const offline = window.ZebrolOffline;
@@ -235,7 +235,7 @@ async function withPhotoDeadline(promise) {
 }
 
 async function syncPending(uid) {
-  if (offlineSyncRunning || !navigator.onLine || !maySync(uid)) return;
+  if (window.ZebrolUpdateFrozen || offlineSyncRunning || !navigator.onLine || !maySync(uid)) return;
   offlineSyncRunning = true;
   try {
     const entries = await offline.getPending(uid);
@@ -758,15 +758,23 @@ function App() {
 
   const openDetails = async item => {
     const sequence = ++openSequence.current;
+    const uid = user.uid;
+    let fullArrived = false;
+    setSelected({ ...item, image: item.image || '', _previewOnly: !item.image });
     setOpening(true);
+    const apply = result => {
+      if (!maySync(uid) || sequence !== openSequence.current) return;
+      setSelected(current => current?.id === item.id ? { ...current, image: result.image || current.image || '', _previewOnly: result.previewOnly } : current);
+    };
+    offline.getThumb(uid,item.id,item.photoVersion).then(image => {
+      if(image && !fullArrived && !item.image)apply({image,previewOnly:true});
+    }).catch(()=>{});
     try {
-      const result = await loadDetailPhoto(user.uid, item);
-      if (maySync(user.uid) && sequence === openSequence.current) setSelected({ ...item, image: result.image, _previewOnly: result.previewOnly });
-    } catch (error) {
-      if (sequence === openSequence.current) window.alert('Não foi possível abrir a foto. ' + saveErrorMessage(error));
-    } finally {
-      if (sequence === openSequence.current) setOpening(false);
-    }
+      const result = await loadDetailPhoto(uid,item);
+      fullArrived = true;
+      apply(result);
+    } catch (_) { /* Keep the immediately opened text and available thumbnail. */ }
+    finally { if(sequence === openSequence.current)setOpening(false); }
   };
 
   const convertExistingPhotos = async () => {
@@ -1183,6 +1191,27 @@ function App() {
     }
   };
 
+  const updateState = useRef(null);
+  updateState.current = {user,showForm,saving,processingImage,locating,converting,alertSaving,confirmDelete,selected,showAccess,showGeneral,duplicate,crop};
+  useEffect(()=>{
+    const check = async () => {
+      const safe = () => {
+        const state=updateState.current;
+        return !!state?.user && !offlineSyncRunning && !state.showForm && !state.saving && !state.processingImage && !state.locating && !state.converting && !state.alertSaving && !state.confirmDelete && !state.selected && !state.showAccess && !state.showGeneral && !state.duplicate && !state.crop && !document.querySelector('.mobile-overlay, [role="dialog"], [role="alertdialog"]');
+      };
+      if(!safe())return false;
+      try {
+        const local=await offline.open();
+        const count=await new Promise((resolve,reject)=>{const tx=local.transaction(['pending'],'readonly');let n=1;const request=tx.objectStore('pending').count();request.onsuccess=()=>{n=request.result;};tx.oncomplete=()=>resolve(n);tx.onerror=tx.onabort=()=>reject(tx.error);});
+        return count===0 && safe();
+      } catch (_) { return false; }
+    };
+    window.ZebrolCanUpdate=check;
+    window.dispatchEvent(new Event('zebrol-update-state'));
+    return()=>{if(window.ZebrolCanUpdate===check)delete window.ZebrolCanUpdate;};
+  },[]);
+  useEffect(()=>{window.dispatchEvent(new Event('zebrol-update-state'));});
+
   const indexedItems=useMemo(()=>items.map(row=>({row,text:searchText(row)})),[items]);
   const searchTokens=useMemo(()=>searchWords(search),[search]);
   const filtered=useMemo(()=>indexedItems
@@ -1258,7 +1287,7 @@ function App() {
       {selected && (
         <div className="mobile-overlay detail-overlay bg-black bg-opacity-70">
           <div role="dialog" aria-modal="true" aria-label="Detalhes do cadastro" ref={detailPanel} className="mobile-panel detail-panel bg-gray-900 rounded">
-          <div ref={detailClose} className="detail-close"><button onClick={() => setSelected(null)} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
+          <div ref={detailClose} className="detail-close"><button onClick={() => { openSequence.current++; setOpening(false); setSelected(null); }} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
           <div className="mobile-scroll detail-content">
             <div className="detail-photo-wrap">
             
@@ -1486,3 +1515,4 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
 </body>
 </html>
+
