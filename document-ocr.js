@@ -24,6 +24,19 @@
       }else{const v=name(value);if(v)found[key].push(v);}
     }
     for(const [key,values] of Object.entries(found)){const unique=[...new Set(values)];if(unique.length===1)result[key]=unique[0];}
+    // Unlabelled parent order is only a suggestion, never an automatic assignment.
+    if(!found.mother.length){
+      const candidates=[];let ambiguous=false;
+      for(let i=0;i<lines.length;i++){
+        const label=normalized(lines[i]).match(/^(?:\d+\s*[-–.]?\s*)?FILIACAO\b\s*[:\-–]?\s*/);if(!label)continue;
+        const parts=[];const inline=lines[i].slice(label[0].length).trim();if(inline)parts.push(inline);
+        for(let j=i+1;j<lines.length&&!header.test(normalized(lines[j]));j++)parts.push(lines[j]);
+        const names=parts.flatMap(value=>value.split('/')).map(value=>name(value));
+        if(names.length===2&&names.every(Boolean)&&normalized(names[0])!==normalized(names[1]))candidates.push(names[1]);
+        else ambiguous=true;
+      }
+      const unique=[...new Set(candidates)];if(!ambiguous&&unique.length===1)result._motherCandidate=unique[0];
+    }
     const cpfText=lines.filter((line,i)=>/\bCPF\b/.test(normalized(line))||i>0&&/\bCPF\b/.test(normalized(lines[i-1]))||/\d{3}\.\d{3}\.\d{3}-\d{2}/.test(line)).join('\n');
     const cpfs=[...cpfText.matchAll(/(?:^|[^\d])(\d{3}[. \t]*\d{3}[. \t]*\d{3}[- \t]*\d{2})(?!\d)/g)].map(m=>m[1].replace(/\D/g,''));
     const unique=[...new Set(cpfs.filter(validCPF))];if(unique.length===1)result.cpf=unique[0].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,'$1.$2.$3-$4');
