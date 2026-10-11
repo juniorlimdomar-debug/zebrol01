@@ -10,7 +10,7 @@
     const lines=String(text||'').normalize('NFC').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
     const result={},found={name:[],mother:[],birth:[]};
     const labels={name:/^(?:\d+(?:\s*E\s*\d+)?\s*[-–.]?\s*)?NOME(?:\s+E\s+SOBRENOME|\s+COMPLETO)?\b\s*[:\-–]?\s*/,mother:/^(?:NOME\s+DA\s+)?MAE\b\s*[:\-–]?\s*/,birth:/^(?:\d+\s*[-–.]?\s*)?(?:DATA\s+(?:DE\s+)?NASCIMENTO|NASCIMENTO|DATA,?\s*LOCAL\s+E\s+UF\s+(?:DE\s+)?NASCIMENTO)\b\s*[:\-–]?\s*/};
-    const header=/\b(CPF|RG|REGISTRO|VALIDADE|EMISSAO|EXPEDICAO|FILIACAO|NASCIMENTO|NACIONALIDADE|NATURALIDADE|ASSINATURA|IDENTIDADE|CARTEIRA|REPUBLICA|DETRAN|SEXO|PAI|MAE|NOME|SOBRENOME)\b/;
+    const header=/\b(CPF|RG|REGISTRO|VALIDADE|EMISSAO|EXPEDICAO|FILIACAO|NASCIMENTO|NACIONALIDADE|NATURALIDADE|ASSINATURA|IDENTIDADE|CARTEIRA|REPUBLICA|DETRAN|SEXO|PAI|MAE|NOME|SOBRENOME|SITUACAO|PROFISSAO|ESTRANGEIRO|OBSERVACAO|ORGAO|DATA|FATOR)\b/;
     function name(value){const v=value.replace(/^[\s:|\-–]+|[\s|]+$/g,'').trim();return v.length<=150&&v.split(/\s+/).length>=2&&/^[\p{L} '\-]+$/u.test(v)&&!header.test(normalized(v))?v:'';}
     for(let i=0;i<lines.length;i++)for(const [key,label] of Object.entries(labels)){
       const line=normalized(lines[i]);const match=line.match(label);if(!match)continue;
@@ -28,20 +28,50 @@
     if(!found.mother.length){
       const candidates=[];let ambiguous=false,requiresConfirmation=false;
       for(let i=0;i<lines.length;i++){
-        const label=normalized(lines[i]).match(/^(?:\d+\s*[-–.]?\s*)?FILIACAO\b(?:\s+1\b)?\s*[:\-–]?\s*/);if(!label)continue;
+        const label=normalized(lines[i]).match(/^(?:\d+\s*[-–.]?\s*)?FILIACAO\b(?!\s*\d)\s*[:\-–]?\s*/);if(!label)continue;
         const parts=[];const inline=lines[i].slice(label[0].length).trim();if(inline)parts.push(inline);
         for(let j=i+1;j<lines.length&&!header.test(normalized(lines[j]));j++)parts.push(lines[j]);
         const names=parts.flatMap(value=>value.split('/')).map(value=>name(value));
-        if(names.length===1&&names[0])candidates.push(names[0]);
-        else if(names.length===2&&names.every(Boolean)&&normalized(names[0])!==normalized(names[1])){candidates.push(names[1]);requiresConfirmation=true;}
+        if(names.length===2&&names.every(Boolean)&&normalized(names[0])!==normalized(names[1])){candidates.push(names[1]);requiresConfirmation=true;}
         else ambiguous=true;
       }
-      const unique=[...new Set(candidates)];if(!ambiguous&&unique.length===1)result[requiresConfirmation?'_motherCandidate':'mother']=unique[0];
+      const unique=[...new Set(candidates)];if(!ambiguous&&unique.length===1)result._motherCandidate=unique[0];
     }
     const cpfText=lines.filter((line,i)=>/\bCPF\b/.test(normalized(line))||i>0&&/\bCPF\b/.test(normalized(lines[i-1]))||/\d{3}\.\d{3}\.\d{3}-\d{2}/.test(line)).join('\n');
     const cpfs=[...cpfText.matchAll(/(?:^|[^\d])(\d{3}[. \t]*\d{3}[. \t]*\d{3}[- \t]*\d{2})(?!\d)/g)].map(m=>m[1].replace(/\D/g,''));
     const unique=[...new Set(cpfs.filter(validCPF))];if(unique.length===1)result.cpf=unique[0].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,'$1.$2.$3-$4');
     return result;
+  }
+
+  function interpret(data){
+    const fields=parse(data.text||'');
+    const lines=(data.blocks||[]).flatMap(b=>(b.paragraphs||[]).flatMap(p=>p.lines||[])).filter(l=>l.bbox&&l.confidence>=65).map(l=>({...l,text:l.text.trim()}));
+    const label=/^(?:(?:NOME DA )?MAE|FILIACAO(?:\s+1)?)\s*[:\-]?\s*$/;
+    const stop=/\b(NATURALIDADE|NASCIMENTO|CPF|RG|SITUACAO|PROFISSAO|ESTRANGEIRO|OBSERVACAO|ORGAO|DATA|SEXO|ASSINATURA|FATOR|FILIACAO|MAE)\b/;
+    const clean=t=>t.replace(/^[\s:|]+|[\s|]+$/g,'').replace(/\s+/g,' ').trim();
+    const isName=t=>t.split(' ').length>=2&&t.length<=150&&/^[\p{L} '\-]+$/u.test(t)&&!stop.test(normalized(t));
+    const explicit=[],suggested=[],known=[];
+    for(const anchor of lines){
+      const tag=normalized(anchor.text);if(!label.test(tag))continue;
+      const box=anchor.bbox,h=Math.max(12,box.y1-box.y0);
+      const region=lines.filter(l=>l!==anchor&&Math.abs(l.bbox.x0-box.x0)<=h*1.4&&l.bbox.y0>=box.y1-h*.2&&l.bbox.y0<box.y1+h*4.5).sort((a,b)=>a.bbox.y0-b.bbox.y0);
+      const selected=[];let bottom=box.y1;
+      for(const line of region){if(line.bbox.y0-bottom>h*1.8||stop.test(normalized(line.text)))break;selected.push(line);bottom=line.bbox.y1;}
+      const names=selected.map(l=>l.text).join(' / ').split('/').map(clean).filter(Boolean);
+      if(!names.length||!names.every(isName)||names.length>2)continue;
+      if(/MAE/.test(tag)&&names.length===1)explicit.push(names[0]);
+      else if(/FILIACAO\s+1/.test(tag)){
+        // Validated RENACH query: source marker and the adjacent field structure.
+        const renach=/FONTE\s*:\s*RENACH/.test(normalized(data.text));
+        const situation=lines.some(l=>/^SITUACAO/.test(normalized(l.text))&&Math.abs(l.bbox.x0-box.x0)<h*1.4&&l.bbox.y0>box.y1);
+        const left=lines.some(l=>/^ESTRANGEIRO/.test(normalized(l.text))&&l.bbox.x1<box.x0&&Math.abs(l.bbox.y0-box.y0)<h*1.5);
+        if(renach&&situation&&left&&names.length===1)known.push(names[0]);
+      }else if(names.length===2&&normalized(names[0])!==normalized(names[1]))suggested.push(names[1]);
+    }
+    const unique=a=>[...new Set(a)];
+    if(explicit.length){delete fields.mother;delete fields._motherCandidate;if(unique(explicit).length===1)fields.mother=explicit[0];}
+    else if(!fields.mother){if(unique(known).length===1){fields.mother=known[0];delete fields._motherCandidate;}else if(unique(suggested).length===1)fields._motherCandidate=suggested[0];}
+    return fields;
   }
   let library;
   function loadLibrary(){
@@ -78,7 +108,19 @@
       if(cancelled){await created.terminate();check();}worker=created;
       await worker.setParameters({tessedit_pageseg_mode:'3'});check();
       const response=await worker.recognize(canvas,{}, {text:true});check();
-      const fields=parse(response.data.text);response.data.text='';return fields;
+      let fields=parse(response.data.text);response.data.text='';
+      if(!fields.mother){
+        await worker.setParameters({tessedit_pageseg_mode:'11'});
+        for(const angle of [0,90,270,180]){
+          check();let rotated=null;
+          try{
+            if(angle){rotated=document.createElement('canvas');rotated.width=angle%180?canvas.height:canvas.width;rotated.height=angle%180?canvas.width:canvas.height;const ctx=rotated.getContext('2d');ctx.translate(rotated.width/2,rotated.height/2);ctx.rotate(angle*Math.PI/180);ctx.drawImage(canvas,-canvas.width/2,-canvas.height/2);}
+            const read=await worker.recognize(rotated||canvas,{}, {text:true,blocks:true});check();const interpreted=interpret(read.data);read.data.text='';read.data.blocks=null;
+            if(interpreted.mother||interpreted._motherCandidate){delete fields._motherCandidate;if(interpreted.mother)fields.mother=interpreted.mother;else fields._motherCandidate=interpreted._motherCandidate;break;}
+          }finally{if(rotated){rotated.width=1;rotated.height=1;}}
+        }
+      }
+      return fields;
     })();
     const timer=setTimeout(cancel,90000);
     const promise=Promise.race([operation,abort]).finally(()=>{
@@ -88,5 +130,6 @@
     });
     return {promise,cancel};
   }
-  root.ZebrolDocumentOCR={parse,validCPF,start};
+  root.ZebrolDocumentOCR={parse,interpret,validCPF,start};
 })(typeof window!=='undefined'?window:globalThis);
+
