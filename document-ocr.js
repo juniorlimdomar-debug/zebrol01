@@ -54,28 +54,45 @@
     for(const anchor of lines){
       const tag=normalized(anchor.text);if(!label.test(tag))continue;
       const box=anchor.bbox,h=Math.max(12,box.y1-box.y0);
-      const region=lines.filter(l=>l!==anchor&&
-        // Keep only values in the same column, not adjacent fields.
-        l.bbox.x0>=box.x0-h*.5 && l.bbox.x0<box.x0+Math.max(h*5,box.x1-box.x0+h*2)&&
-        l.bbox.y0>=box.y1-h*.2&&l.bbox.y0<box.y1+h*6
-      ).sort((a,b)=>a.bbox.y0-b.bbox.y0);
+      const isFil1=/FILIACAO\s+1/.test(tag);
+      const sameColumn=line=>{
+        const x=line.bbox.x0;
+        return x>=box.x0-h*1.5 && x<=box.x0+Math.max(h*9,box.x1-box.x0+h*5);
+      };
+      // Keep layout boundaries, but do not require matching font sizes or x positions.
+      const region=lines.filter(l=>l!==anchor&&sameColumn(l)&&
+        l.bbox.y0>=box.y1-h*.35&&l.bbox.y0<=box.y1+h*8
+      ).sort((a,b)=>a.bbox.y0-b.bbox.y0||a.bbox.x0-b.bbox.x0);
       const selected=[];let bottom=box.y1;
-      for(const line of region){if(line.bbox.y0-bottom>h*1.8||stop.test(normalized(line.text)))break;selected.push(line);bottom=line.bbox.y1;}
-      const names=selected.map(l=>l.text).join(' / ').split('/').map(clean).filter(Boolean);
-      if(!names.length||!names.every(isName)||names.length>2)continue;
-      if(/MAE/.test(tag)&&names.length===1)explicit.push(names[0]);
-      else if(/FILIACAO\s+1/.test(tag)){
-        // Validated RENACH query: source marker and the adjacent field structure.
+      for(const line of region){
+        const value=clean(line.text);
+        if(!value)continue;
+        // Stop at the next field, even if its typography differs.
+        if(stop.test(normalized(value))||/^(?:FILIACAO\s*2|DATA\s+DE|STATUS|SITUACAO)\b/.test(normalized(value)))break;
+        if(line.bbox.y0-bottom>Math.max(h*2.8,(line.bbox.y1-line.bbox.y0)*2.1))break;
+        if(!/^[\p{L} '\-]+$/u.test(value))break;
+        selected.push(value);bottom=Math.max(bottom,line.bbox.y1);
+        if(selected.length>=4)break;
+      }
+      if(!selected.length)continue;
+      if(/MAE/.test(tag)){
+        const full=selected.join(' ');
+        if(isName(full))explicit.push(full);
+      }else if(isFil1){
+        // Two OCR lines in FILIAÇÃO 1 usually belong to ONE value, not two parents.
+        const combined=selected.join(' ');
         const renach=/FONTE\s*:\s*RENACH/.test(normalized(data.text));
-        const situation=lines.some(l=>/^SITUACAO/.test(normalized(l.text))&&Math.abs(l.bbox.x0-box.x0)<h*1.4&&l.bbox.y0>box.y1);
-        const left=lines.some(l=>/^ESTRANGEIRO/.test(normalized(l.text))&&l.bbox.x1<box.x0&&Math.abs(l.bbox.y0-box.y0)<h*1.5);
-        // RENACH result cards sometimes omit the source footer and wrap the
-        // mother's name across two OCR lines. Never require the footer.
-        // Treat this as a candidate for user confirmation, not a fact.
-        const combined=selected.map(l=>clean(l.text)).filter(Boolean).join(' ');
-        if((renach||situation||left)&&isName(combined)&&names.length<=2)
-          suggested.push(combined);
-      }else if(names.length===2&&normalized(names[0])!==normalized(names[1]))suggested.push(names[1]);
+        const situation=lines.some(l=>/^SITUACAO/.test(normalized(l.text))&&sameColumn(l)&&l.bbox.y0>box.y1);
+        const left=lines.some(l=>/^ESTRANGEIRO/.test(normalized(l.text))&&l.bbox.x1<box.x0&&Math.abs(l.bbox.y0-box.y0)<h*2);
+        if(isName(combined)&&(renach||situation||left))suggested.push(combined);
+      }else{
+        // Unnumbered FILIAÇÃO: father above mother, or father / mother.
+        const original=selected.join(' / ');
+        const parts=selected.length===1?selected[0].split(/\s+\/\s+/):selected;
+        const names=parts.map(clean).filter(Boolean);
+        if(names.length===2&&names.every(isName)&&normalized(names[0])!==normalized(names[1]))
+          suggested.push(names[1]);
+      }
     }
     // A date can be below its label in a different OCR column.
     // Look for its spatially associated value, never a nearby update date.
