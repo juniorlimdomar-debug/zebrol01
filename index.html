@@ -723,7 +723,7 @@ let documentReaderModule;
 function loadDocumentReader(){
   if(window.ZebrolDocumentOCR)return Promise.resolve(window.ZebrolDocumentOCR);
   if(!documentReaderModule)documentReaderModule=new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src='./document-ocr.js?v=20';
+    const script=document.createElement('script');script.src='./document-ocr.js?v=21';
     const timer=setTimeout(()=>{script.remove();documentReaderModule=null;reject(new Error('Não foi possível carregar o leitor. Confira a conexão.'));},20000);
     script.onload=()=>{clearTimeout(timer);if(window.ZebrolDocumentOCR)resolve(window.ZebrolDocumentOCR);else{documentReaderModule=null;reject(new Error('Leitor indisponível.'));}};
     script.onerror=()=>{clearTimeout(timer);script.remove();documentReaderModule=null;reject(new Error('Não foi possível carregar o leitor. Confira a conexão.'));};document.head.appendChild(script);
@@ -912,7 +912,7 @@ function App() {
   useEffect(()=>{setOcrOpen(false);setOcrMessage('');},[showForm,editingId,formType,user]);
   const receiveDocument = fields => {
     fields={...fields};
-    if(!fields.mother&&fields._motherCandidate&&window.confirm('A filiação mostra dois nomes sem identificar pai e mãe. O segundo nome é '+fields._motherCandidate+'. Confirma que este é o nome da mãe? Cancelar mantém o campo atual.'))fields.mother=fields._motherCandidate;
+    if(!fields.mother&&fields._motherCandidate&&window.confirm('A leitura encontrou na filiação o nome '+fields._motherCandidate+'. Confirma que este é o nome da mãe? Cancelar mantém o campo atual.'))fields.mother=fields._motherCandidate;
     delete fields._motherCandidate;
     const allowed=['name','cpf','birth','mother'];
     const labels={name:'Nome',cpf:'CPF',birth:'Nascimento',mother:'Nome da mãe'};
