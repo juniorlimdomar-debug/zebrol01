@@ -54,7 +54,11 @@
     for(const anchor of lines){
       const tag=normalized(anchor.text);if(!label.test(tag))continue;
       const box=anchor.bbox,h=Math.max(12,box.y1-box.y0);
-      const region=lines.filter(l=>l!==anchor&&Math.abs(l.bbox.x0-box.x0)<=h*1.4&&l.bbox.y0>=box.y1-h*.2&&l.bbox.y0<box.y1+h*4.5).sort((a,b)=>a.bbox.y0-b.bbox.y0);
+      const region=lines.filter(l=>l!==anchor&&
+        // Keep only values in the same column, not adjacent fields.
+        l.bbox.x0>=box.x0-h*.5 && l.bbox.x0<box.x0+Math.max(h*5,box.x1-box.x0+h*2)&&
+        l.bbox.y0>=box.y1-h*.2&&l.bbox.y0<box.y1+h*6
+      ).sort((a,b)=>a.bbox.y0-b.bbox.y0);
       const selected=[];let bottom=box.y1;
       for(const line of region){if(line.bbox.y0-bottom>h*1.8||stop.test(normalized(line.text)))break;selected.push(line);bottom=line.bbox.y1;}
       const names=selected.map(l=>l.text).join(' / ').split('/').map(clean).filter(Boolean);
@@ -65,8 +69,38 @@
         const renach=/FONTE\s*:\s*RENACH/.test(normalized(data.text));
         const situation=lines.some(l=>/^SITUACAO/.test(normalized(l.text))&&Math.abs(l.bbox.x0-box.x0)<h*1.4&&l.bbox.y0>box.y1);
         const left=lines.some(l=>/^ESTRANGEIRO/.test(normalized(l.text))&&l.bbox.x1<box.x0&&Math.abs(l.bbox.y0-box.y0)<h*1.5);
-        if(renach&&situation&&left&&names.length===1)known.push(names[0]);
+        // RENACH result cards sometimes omit the source footer and wrap the
+        // mother's name across two OCR lines. Never require the footer.
+        // Treat this as a candidate for user confirmation, not a fact.
+        const combined=selected.map(l=>clean(l.text)).filter(Boolean).join(' ');
+        if((renach||situation||left)&&isName(combined)&&names.length<=2)
+          suggested.push(combined);
       }else if(names.length===2&&normalized(names[0])!==normalized(names[1]))suggested.push(names[1]);
+    }
+    // A date can be below its label in a different OCR column.
+    // Look for its spatially associated value, never a nearby update date.
+    const birthLabels=lines.filter(l=>/^(?:DATA\s+(?:DE\s+)?NASCIMENTO|NASCIMENTO)\s*[:\-]?$/i.test(normalized(l.text)));
+    const validDate=value=>{
+      const m=String(value).match(/\b(\d{2})[\/.\-](\d{2})[\/.\-](\d{4})\b/);
+      if(!m)return null;
+      const d=+m[1],mo=+m[2],y=+m[3],dt=new Date(Date.UTC(y,mo-1,d));
+      return y>=1900&&dt.getTime()<=Date.now()&&dt.getUTCDate()===d&&dt.getUTCMonth()===mo-1&&dt.getUTCFullYear()===y?m[1]+'/'+m[2]+'/'+m[3]:null;
+    };
+    if(!fields.birth){
+      const dates=[];
+      for(const anchor of birthLabels){
+        const b=anchor.bbox,h=Math.max(12,b.y1-b.y0);
+        const nearby=lines.filter(l=>l!==anchor&&
+          l.bbox.x0>=b.x0-h*.5&&l.bbox.x0<=b.x1+h*2.5&&
+          l.bbox.y0>=b.y1-h*.2&&l.bbox.y0<=b.y1+h*4
+        ).sort((a,c)=>a.bbox.y0-c.bbox.y0);
+        for(const line of nearby){
+          if(/\b(?:ATUALIZACAO|EXPEDICAO|EMISSAO|VALIDADE|SITUACAO|FILIACAO)\b/.test(normalized(line.text)))break;
+          const date=validDate(line.text);if(date){dates.push(date);break;}
+        }
+      }
+      const uniqueDates=[...new Set(dates)];
+      if(uniqueDates.length===1)fields.birth=uniqueDates[0];
     }
     const unique=a=>[...new Set(a)];
     if(explicit.length){delete fields.mother;delete fields._motherCandidate;if(unique(explicit).length===1)fields.mother=explicit[0];}
@@ -109,14 +143,17 @@
       await worker.setParameters({tessedit_pageseg_mode:'3'});check();
       const response=await worker.recognize(canvas,{}, {text:true});check();
       let fields=parse(response.data.text);response.data.text='';
-      if(!fields.mother){
+      if(!fields.mother || !fields.birth){
         await worker.setParameters({tessedit_pageseg_mode:'11'});
         for(const angle of [0,90,270,180]){
           check();let rotated=null;
           try{
             if(angle){rotated=document.createElement('canvas');rotated.width=angle%180?canvas.height:canvas.width;rotated.height=angle%180?canvas.width:canvas.height;const ctx=rotated.getContext('2d');ctx.translate(rotated.width/2,rotated.height/2);ctx.rotate(angle*Math.PI/180);ctx.drawImage(canvas,-canvas.width/2,-canvas.height/2);}
             const read=await worker.recognize(rotated||canvas,{}, {text:true,blocks:true});check();const interpreted=interpret(read.data);read.data.text='';read.data.blocks=null;
-            if(interpreted.mother||interpreted._motherCandidate){delete fields._motherCandidate;if(interpreted.mother)fields.mother=interpreted.mother;else fields._motherCandidate=interpreted._motherCandidate;break;}
+            if(interpreted.birth&&!fields.birth)fields.birth=interpreted.birth;
+            if(interpreted.mother){delete fields._motherCandidate;fields.mother=interpreted.mother;}
+            else if(interpreted._motherCandidate&&!fields.mother&&!fields._motherCandidate)fields._motherCandidate=interpreted._motherCandidate;
+            if(fields.birth&&(fields.mother||fields._motherCandidate))break;
           }finally{if(rotated){rotated.width=1;rotated.height=1;}}
         }
       }
