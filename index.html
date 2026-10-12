@@ -723,7 +723,7 @@ let documentReaderModule;
 function loadDocumentReader(){
   if(window.ZebrolDocumentOCR)return Promise.resolve(window.ZebrolDocumentOCR);
   if(!documentReaderModule)documentReaderModule=new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src='./document-ocr.js?v=22';
+    const script=document.createElement('script');script.src='./document-ocr.js?v=26';
     const timer=setTimeout(()=>{script.remove();documentReaderModule=null;reject(new Error('Não foi possível carregar o leitor. Confira a conexão.'));},20000);
     script.onload=()=>{clearTimeout(timer);if(window.ZebrolDocumentOCR)resolve(window.ZebrolDocumentOCR);else{documentReaderModule=null;reject(new Error('Leitor indisponível.'));}};
     script.onerror=()=>{clearTimeout(timer);script.remove();documentReaderModule=null;reject(new Error('Não foi possível carregar o leitor. Confira a conexão.'));};document.head.appendChild(script);
