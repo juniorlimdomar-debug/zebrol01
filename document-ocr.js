@@ -47,7 +47,8 @@
     const fields=parse(data.text||'');
     const lines=(data.blocks||[]).flatMap(b=>(b.paragraphs||[]).flatMap(p=>p.lines||[])).filter(l=>l.bbox&&l.confidence>=65).map(l=>({...l,text:l.text.trim()}));
     const label=/^(?:(?:NOME DA )?MAE|FILIACAO(?:\s+1)?)\s*[:\-]?\s*$/;
-    const stop=/\b(NATURALIDADE|NASCIMENTO|CPF|RG|SITUACAO|PROFISSAO|ESTRANGEIRO|OBSERVACAO|ORGAO|DATA|SEXO|ASSINATURA|FATOR|FILIACAO|MAE)\b/;
+    // Nascimento can be a surname; only the standalone label ends a value.
+    const stop=/^(?:NASCIMENTO\s*:?\s*$)|\b(NATURALIDADE|CPF|RG|SITUACAO|PROFISSAO|ESTRANGEIRO|OBSERVACAO|ORGAO|DATA|SEXO|ASSINATURA|FATOR|FILIACAO|MAE)\b/;
     const clean=t=>t.replace(/^[\s:|]+|[\s|]+$/g,'').replace(/\s+/g,' ').trim();
     const isName=t=>t.split(' ').length>=2&&t.length<=150&&/^[\p{L} '\-]+$/u.test(t)&&!stop.test(normalized(t));
     const explicit=[],suggested=[],known=[];
@@ -70,7 +71,7 @@
         // Stop at the next field, even if its typography differs.
         if(stop.test(normalized(value))||/^(?:FILIACAO\s*2|DATA\s+DE|STATUS|SITUACAO)\b/.test(normalized(value)))break;
         if(line.bbox.y0-bottom>Math.max(h*2.8,(line.bbox.y1-line.bbox.y0)*2.1))break;
-        if(!/^[\p{L} '\-]+$/u.test(value))break;
+        if(!/^[\p{L} '\/-]+$/u.test(value))break;
         selected.push(value);bottom=Math.max(bottom,line.bbox.y1);
         if(selected.length>=4)break;
       }
@@ -88,7 +89,7 @@
       }else{
         // Unnumbered FILIAÇÃO: father above mother, or father / mother.
         const original=selected.join(' / ');
-        const parts=selected.length===1?selected[0].split(/\s+\/\s+/):selected;
+        const parts=selected.join(' / ').split('/');
         const names=parts.map(clean).filter(Boolean);
         if(names.length===2&&names.every(isName)&&normalized(names[0])!==normalized(names[1]))
           suggested.push(names[1]);
@@ -128,10 +129,11 @@
       if(filLabels.length!==1)return '';
       const anchor=filLabels[0],b=anchor.bbox,h=Math.max(10,b.y1-b.y0);
       // Exige indícios de tela de consulta, não aplica a RG ou CNH físicos.
-      const hasConsultationHeader=/RESULTADO\s+DA\s+CONSULTA\s+DE\s+PESSOAS/.test(normalized(data.text)) ||
+      const personalDetails=/NACIONALIDADE/.test(normalized(data.text))&&/SITUACAO CADASTRAL/.test(normalized(data.text))&&/NATUREZA DA OCUPACAO/.test(normalized(data.text));
+      const hasConsultationHeader=personalDetails||/RESULTADO\s+DA\s+CONSULTA\s+DE\s+PESSOAS/.test(normalized(data.text)) ||
         lines.some(l=>/^UF\s*\/\s*MUNICIPIO/.test(normalizedLine(l)));
       const next=lines.filter(l=>l.bbox.y0>b.y0 && 
-        /^(?:SITUACAO|FILIACAO\s*2|PROFISSAO)\s*:?\s*$/.test(normalizedLine(l)) &&
+        (/^(?:SITUACAO|FILIACAO\s*2|PROFISSAO)\s*:?\s*$/.test(normalizedLine(l)) || personalDetails&&/^SEXO\s*:?$/.test(normalizedLine(l))) &&
         Math.abs(l.bbox.x0-b.x0)<h*4).sort((a,c)=>a.bbox.y0-c.bbox.y0)[0];
       if(!hasConsultationHeader || !next)return '';
       // Coluna igual à da âncora; limite superior é o rótulo, inferior o próximo campo.
