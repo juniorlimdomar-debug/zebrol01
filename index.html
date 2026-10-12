@@ -729,9 +729,9 @@ function loadDocumentReader(){
     script.onerror=()=>{clearTimeout(timer);script.remove();documentReaderModule=null;reject(new Error('Não foi possível carregar o leitor. Confira a conexão.'));};document.head.appendChild(script);
   });return documentReaderModule;
 }
-function DocumentReader({onClose,onResult}) {
+function DocumentReader({source,onClose,onResult}) {
   const [busy,setBusy]=useState(false),[error,setError]=useState('');
-  const fileInput=useRef(null),job=useRef(null),alive=useRef(true),locked=useRef(false),generation=useRef(0);
+  const job=useRef(null),alive=useRef(true),locked=useRef(false),generation=useRef(0);
   const cancel=()=>{generation.current++;job.current?.cancel();job.current=null;onClose();};
   useEffect(()=>{
     alive.current=true;
@@ -752,15 +752,13 @@ function DocumentReader({onClose,onResult}) {
     }catch(e){if(alive.current&&token===generation.current)setError(e.message||'Não foi possível ler a foto. Preencha manualmente ou tente novamente.');}
     finally{source=null;if(alive.current&&token===generation.current){locked.current=false;setBusy(false);}}
   };
+  useEffect(()=>{if(source)read(source);},[]);
   return ReactDOM.createPortal(<div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:120}}><div role="dialog" aria-modal="true" aria-labelledby="ocr-title" className="mobile-panel bg-gray-900 rounded max-w-sm">
     <div className="mobile-header relative"><h2 id="ocr-title" className="font-semibold pr-6">Ler documento</h2><button type="button" onClick={cancel} aria-label="Fechar leitura do documento" className="text-red-400 text-2xl px-2">×</button></div>
     <div className="mobile-scroll p-4 space-y-3">
       <p className="text-sm text-gray-400">A foto é usada somente para leitura. Confira os dados antes de salvar o cadastro.</p>
       {error&&<p role="alert" className="text-red-300 text-sm">{error}</p>}
-      {busy?<p role="status" className="text-sm text-gray-300">Lendo documento...</p>:<>
-        <button type="button" onClick={()=>{if(!navigator.onLine){setError('Conecte à internet para ler o documento.');return;}fileInput.current?.click();}} className="w-full bg-gray-700 p-2 rounded">📷 Adicionar ou tirar foto</button>
-      </>}
-      <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)read(file);}}/>
+      {!error&&<p role="status" className="text-sm text-gray-300">Lendo documento...</p>}
       <button type="button" onClick={cancel} className="w-full bg-gray-700 p-2 rounded">Cancelar</button>
     </div>
   </div></div>,document.body);
@@ -909,7 +907,10 @@ function App() {
 
   const [form, setForm] = useState(emptyForm);
   const [ocrOpen,setOcrOpen]=useState(false),[ocrMessage,setOcrMessage]=useState('');
-  useEffect(()=>{setOcrOpen(false);setOcrMessage('');},[showForm,editingId,formType,user]);
+  const [ocrSource,setOcrSource]=useState(null);
+  const documentInput=useRef(null),mainPhotoInput=useRef(null);
+  const closeDocument=()=>{setOcrOpen(false);setOcrSource(null);};
+  useEffect(()=>{setOcrOpen(false);setOcrSource(null);setOcrMessage('');},[showForm,editingId,formType,user]);
   const receiveDocument = fields => {
     fields={...fields};
     if(!fields.mother&&fields._motherCandidate&&window.confirm('A leitura encontrou na filiação o nome '+fields._motherCandidate+'. Confirma que este é o nome da mãe? Cancelar mantém o campo atual.'))fields.mother=fields._motherCandidate;
@@ -1513,7 +1514,7 @@ function App() {
         </>
       )}
 
-      {ocrOpen && showForm && formType==='person' && <DocumentReader onClose={()=>setOcrOpen(false)} onResult={receiveDocument}/> }
+      {ocrOpen && showForm && formType==='person' && <DocumentReader source={ocrSource} onClose={closeDocument} onResult={receiveDocument}/> }
       {showForm && (
         <div className="mobile-overlay bg-black bg-opacity-70">
           <div role="dialog" aria-modal="true" aria-label="Formulário do cadastro" className="mobile-panel mobile-form bg-gray-900 rounded max-w-sm">
@@ -1522,7 +1523,8 @@ function App() {
             </div>
             <div className="mobile-scroll p-4 space-y-2">
             <fieldset disabled={busy} className="space-y-2 disabled:opacity-70">
-            <input type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={handleChange} aria-label="Foto do cadastro" />
+            <input ref={mainPhotoInput} hidden type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={handleChange} aria-label="Foto do cadastro" />
+            <button type="button" aria-label="Adicionar foto do cadastro" title="Adicionar foto do cadastro" onClick={()=>mainPhotoInput.current?.click()} className="px-3 text-xl" style={{height:44}}>📷</button>
             {crop && (
               <div className="space-y-3 py-2">
                 <p className="text-sm">Ajuste o enquadramento da foto:</p>
@@ -1570,8 +1572,9 @@ function App() {
             <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
             <div className="relative">
               <input className="w-full bg-gray-800 p-2 rounded" style={{paddingRight:48}} name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange} />
-              <button type="button" aria-label="Ler dados de documento" title="Ler documento" onClick={()=>{if(!navigator.onLine){setOcrMessage('Conecte à internet para ler o documento. O cadastro manual continua disponível.');return;}setOcrMessage('');setOcrOpen(true);}} className="absolute right-0 top-0 h-full px-3 text-xl">📷</button>
+              <button type="button" aria-label="Ler dados de documento" title="Ler documento" onClick={()=>{if(!navigator.onLine){setOcrMessage('Conecte à internet para ler o documento. O cadastro manual continua disponível.');return;}setOcrMessage('');documentInput.current?.click();}} className="absolute right-0 top-0 h-full px-3 text-xl">📷</button>
             </div>
+            <input ref={documentInput} hidden type="file" accept="image/jpeg,image/png,image/webp" aria-label="Documento para leitura temporária" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;if(!navigator.onLine){setOcrMessage('Conecte à internet para ler o documento.');return;}setOcrSource(file);setOcrOpen(true);}} />
             {ocrMessage&&<p role="status" className="text-sm text-gray-400">{ocrMessage}</p>}
 
             <input className="w-full bg-gray-800 p-2 rounded" name="birth" placeholder="Data de nascimento" value={form.birth} onChange={handleChange} />
