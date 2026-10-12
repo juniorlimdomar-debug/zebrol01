@@ -119,9 +119,36 @@
       const uniqueDates=[...new Set(dates)];
       if(uniqueDates.length===1)fields.birth=uniqueDates[0];
     }
+    // Layout de consulta em duas colunas (ex.: Resultado da Consulta de Pessoas).
+    // FILIAÇÃO 1 fica na coluna direita; nomes podem ocupar várias linhas.
+    // É uma sugestão, sujeita à confirmação: FILIAÇÃO 1 não é universalmente mãe.
+    function consultationMotherCandidate(){
+      const normalizedLine=l=>normalized(l.text).replace(/\s+/g,' ').trim();
+      const filLabels=lines.filter(l=>/^FILIACAO\s*1\s*:?\s*$/.test(normalizedLine(l)));
+      if(filLabels.length!==1)return '';
+      const anchor=filLabels[0],b=anchor.bbox,h=Math.max(10,b.y1-b.y0);
+      // Exige indícios de tela de consulta, não aplica a RG ou CNH físicos.
+      const hasConsultationHeader=/RESULTADO\s+DA\s+CONSULTA\s+DE\s+PESSOAS/.test(normalized(data.text)) ||
+        lines.some(l=>/^UF\s*\/\s*MUNICIPIO/.test(normalizedLine(l)));
+      const next=lines.filter(l=>l.bbox.y0>b.y0 && 
+        /^(?:SITUACAO|FILIACAO\s*2|PROFISSAO)\s*:?\s*$/.test(normalizedLine(l)) &&
+        Math.abs(l.bbox.x0-b.x0)<h*4).sort((a,c)=>a.bbox.y0-c.bbox.y0)[0];
+      if(!hasConsultationHeader || !next)return '';
+      // Coluna igual à da âncora; limite superior é o rótulo, inferior o próximo campo.
+      const candidates=lines.filter(l=>l!==anchor &&
+        l.bbox.y0>=b.y1-h*.15 && l.bbox.y1<=next.bbox.y0+h*.2 &&
+        l.bbox.x0>=b.x0-h*1.7 && l.bbox.x0<b.x0+h*9 &&
+        l.bbox.x1> b.x0
+      ).sort((a,c)=>a.bbox.y0-c.bbox.y0);
+      const values=candidates.map(l=>clean(l.text)).filter(Boolean);
+      if(!values.length||values.length>3||!values.every(v=>/^[\p{L} '\-]+$/u.test(v)))return '';
+      const full=values.join(' ');
+      return isName(full)?full:'';
+    }
+    const consultationCandidate=consultationMotherCandidate();
     const unique=a=>[...new Set(a)];
     if(explicit.length){delete fields.mother;delete fields._motherCandidate;if(unique(explicit).length===1)fields.mother=explicit[0];}
-    else if(!fields.mother){if(unique(known).length===1){fields.mother=known[0];delete fields._motherCandidate;}else if(unique(suggested).length===1)fields._motherCandidate=suggested[0];}
+    else if(!fields.mother){if(consultationCandidate)fields._motherCandidate=consultationCandidate;else if(unique(known).length===1){fields.mother=known[0];delete fields._motherCandidate;}else if(unique(suggested).length===1)fields._motherCandidate=suggested[0];}
     return fields;
   }
   let library;
