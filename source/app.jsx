@@ -1,0 +1,1543 @@
+
+const { useState, useEffect, useRef, useMemo } = React;
+
+
+
+const auth = firebase.auth();
+const db = firebase.firestore();
+const notifications=ZebrolNotifications.create(db,dataOwner,()=>firebase.firestore.FieldValue.serverTimestamp());
+const recordGuard = ZebrolRecordGuard.create(db,dataOwner,maySync,notifications.event);
+const generalVehicles=ZebrolGeneralVehicles.create(db,dataOwner,maySync,()=>auth.currentUser?.uid===ZEBROL_ADMIN_UID,()=>navigator.onLine,notifications.event);
+
+async function compressPhoto(file) {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    throw new Error('Escolha uma foto JPG, PNG ou WebP. Converta fotos HEIC para JPG antes de enviar.');
+  }
+  if (file.size > 20 * 1024 * 1024) throw new Error('A foto original deve ter no máximo 20 MB.');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const picture = new Image();
+      picture.onload = () => resolve(picture);
+      picture.onerror = () => reject(new Error('Não foi possível abrir essa foto. Escolha outro arquivo.'));
+      picture.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Este navegador não conseguiu processar a foto.');
+    for (const maxSide of [1000, 800, 600, 400]) {
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(img, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.85, 0.7, 0.55, 0.4]) {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+        if (blob && blob.size <= 300 * 1024) {
+          return await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Não foi possível ler a foto processada.'));
+            reader.readAsDataURL(blob);
+          });
+        }
+      }
+    }
+    throw new Error('Não foi possível reduzir a foto o suficiente. Escolha outra imagem.');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function saveErrorMessage(error) {
+  const code = (error.code || '').replace('firestore/', '');
+  if (code === 'permission-denied') return 'O Firebase recusou a gravação. Verifique as regras de acesso do banco.';
+  if (code === 'unauthenticated') return 'Sua sessão expirou. Entre novamente antes de salvar.';
+  if (code === 'unavailable' || code === 'deadline-exceeded') return 'Não foi possível confirmar a gravação. Verifique sua conexão.';
+  if (code === 'resource-exhausted') return 'O Firebase atingiu um limite de uso. Verifique as cotas do projeto.';
+  return error.message || 'Não foi possível salvar. Tente novamente.';
+}
+
+function photoRefs(uid, id) {
+  const item = db.collection('users').doc(dataOwner(uid)).collection('items').doc(id);
+  return { item, full: item.collection('photos').doc('full'), thumb: item.collection('photos').doc('thumb') };
+}
+
+async function makeThumbnail(image) {
+  const img = await new Promise((resolve, reject) => {
+    const picture = new Image();
+    picture.onload = () => resolve(picture);
+    picture.onerror = () => reject(new Error('Não foi possível preparar a miniatura.'));
+    picture.src = image;
+  });
+  const canvas = document.createElement('canvas');
+  const scale = Math.min(1, 240 / Math.max(img.naturalWidth, img.naturalHeight));
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Este navegador não conseguiu preparar a miniatura.');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  for (const quality of [0.7, 0.5, 0.3]) {
+    const result = canvas.toDataURL('image/jpeg', quality);
+    if (result.length <= 32 * 1024) return result;
+  }
+  throw new Error('Miniatura muito grande. Escolha uma imagem menor.');
+}
+
+async function readFullPhoto(uid, item) {
+  if (item.image) return item.image;
+  if (!item.hasPhoto) return '';
+  const snap = await photoRefs(uid, item.id).full.get();
+  if (!snap.exists || !snap.data().image) throw new Error('A foto não está disponível. Verifique as permissões ou tente novamente.');
+  return snap.data().image;
+}
+
+// Atomic conversion: remove the old field only together with both photo writes.
+async function convertLegacyPhoto(uid, item) {
+  const original = item.image;
+  if (!original) return false;
+  const thumbnail = await makeThumbnail(original);
+  const refs = photoRefs(uid, item.id);
+  return db.runTransaction(async tx => {
+    const latest = await tx.get(refs.item);
+    if (!latest.exists || latest.data().image !== original) return false;
+    const version = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+    tx.set(refs.full, { image: original, version });
+    tx.set(refs.thumb, { image: thumbnail, version });
+    tx.update(refs.item, { image: firebase.firestore.FieldValue.delete(), hasPhoto: true, photoVersion: version });
+    return true;
+  });
+}
+
+const LazyThumbnail = React.memo(function LazyThumbnail({ uid, item }) {
+  const host = useRef(null);
+  const [visible, setVisible] = useState(false);
+  const [image, setImage] = useState('');
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    const online = () => setRetry(n => n + 1);
+    window.addEventListener('online',online);
+    return () => window.removeEventListener('online',online);
+  }, []);
+  useEffect(() => {
+    if (!host.current) return;
+    if (!window.IntersectionObserver) { setVisible(true); return; }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '160px' });
+    observer.observe(host.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    let active = true;
+    setImage('');
+    setFailed(false);
+    if (!visible) return;
+    loadThumbnail(uid,item).then(thumbnail => {
+      if(active) setImage(thumbnail);
+    }).catch(() => { if(active) setFailed(navigator.onLine); });
+    return () => { active = false; };
+  }, [uid, item.id, item.image, item.hasPhoto, item.photoVersion, item._pending, visible, retry]);
+  return <div ref={host} className="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden">
+    {image && <img src={image} alt={item.name || 'Foto do cadastro'} loading="lazy" decoding="async" className="w-full h-full object-cover" />}
+    {failed && <button className="w-full h-full text-sm" onClick={e => { e.stopPropagation(); setRetry(n => n + 1); }}>Recarregar foto</button>}
+  </div>;
+}, (a,b)=>a.uid===b.uid && a.item.id===b.item.id && a.item.name===b.item.name && a.item.image===b.item.image && a.item.hasPhoto===b.item.hasPhoto && a.item.photoVersion===b.item.photoVersion && a.item._pending===b.item._pending);
+
+
+const offline = window.ZebrolOffline;
+let offlineSyncRunning = false;
+const offlineChanges = new EventTarget();
+const offlineChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('zebrol-pending-v1') : null;
+function announceOfflineChange() {
+  offlineChanges.dispatchEvent(new Event('change'));
+  offlineChannel?.postMessage('change');
+}
+if (offlineChannel) offlineChannel.onmessage = () => offlineChanges.dispatchEvent(new Event('change'));
+
+async function withPhotoDeadline(promise) {
+  let timer;
+  try {
+    return await Promise.race([promise,new Promise((_,reject) => {
+      timer = setTimeout(() => reject(new Error('Foto indisponível no momento.')),3500);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+async function syncPending(uid) {
+  if (window.ZebrolUpdateFrozen || offlineSyncRunning || !navigator.onLine || !maySync(uid)) return;
+  offlineSyncRunning = true;
+  try {
+    const entries = await offline.getPending(uid);
+    for (const entry of entries) {
+      if (!navigator.onLine || !maySync(uid)) break;
+      if(entry.duplicateId) continue;
+      try {
+        await recordGuard.save({uid,id:entry.id,payload:entry.item,image:entry.image,thumbnail:entry.thumbnail,token:entry.token});
+        // Thumbnail caching is optional and must not prevent acknowledgement.
+        await offline.putThumb(uid,entry.id,entry.item.photoVersion,entry.thumbnail).catch(() => {});
+        await offline.confirm(entry);
+        announceOfflineChange();
+      } catch (error) {
+        await offline.setPendingError(uid,entry.id,saveErrorMessage(error),error.duplicate?.id || '');
+        if(error.code==='duplicate-person') offlineChanges.dispatchEvent(new CustomEvent('duplicate',{detail:{existing:error.duplicate,pendingId:entry.id,uid}}));
+        announceOfflineChange();
+        if (!navigator.onLine || ['unavailable','unauthenticated','permission-denied'].includes(error.code)) break;
+      }
+    }
+  } catch (error) {
+    console.error('Falha ao acessar cadastros pendentes:', error);
+  } finally { offlineSyncRunning = false; }
+}
+
+async function loadThumbnail(uid, item) {
+  const pending = await offline.pendingOne(uid,item.id).catch(() => null);
+  if (pending) return pending.thumbnail || '';
+  const cached = await offline.getThumb(uid,item.id,item.photoVersion).catch(() => '');
+  if (cached) return cached;
+  if (item.image) {
+    const thumbnail = await makeThumbnail(item.image);
+    await offline.putThumb(uid,item.id,item.photoVersion,thumbnail).catch(() => {});
+    return thumbnail;
+  }
+  if (!item.hasPhoto || !navigator.onLine) return '';
+  const snap = await withPhotoDeadline(photoRefs(uid,item.id).thumb.get({ source: 'server' }));
+  if (!snap.exists || !snap.data().image) return '';
+  const thumbnail = snap.data().image;
+  await offline.putThumb(uid,item.id,item.photoVersion,thumbnail).catch(() => {});
+  return thumbnail;
+}
+
+async function loadDetailPhoto(uid,item) {
+  const pending = await offline.pendingOne(uid,item.id).catch(() => null);
+  if (pending) return { image: pending.image || '', previewOnly: false };
+  if (item.image) return { image: item.image, previewOnly: false };
+  if (!item.hasPhoto) return { image: '', previewOnly: false };
+  if (navigator.onLine) {
+    try {
+      const snap = await withPhotoDeadline(photoRefs(uid,item.id).full.get({ source: 'server' }));
+      if (snap.exists && snap.data().image) return { image: snap.data().image, previewOnly: false };
+    } catch (_) { /* text and cached thumbnail remain available */ }
+  }
+  return { image: await offline.getThumb(uid,item.id,item.photoVersion).catch(() => ''), previewOnly: true };
+}
+
+function AccessGate({ status }) {
+  const [email,setEmail] = useState('');
+  const [password,setPassword] = useState('');
+  const [name,setName] = useState('');
+  const [requesting,setRequesting] = useState(false);
+  const [busy,setBusy] = useState(false);
+  const [error,setError] = useState('');
+  const run = async action => {
+    if(busy) return;
+    setBusy(true); setError('');
+    try { await action(); }
+    catch(e) {
+      setError(e.code?.startsWith('auth/') ?
+        (e.code === 'auth/operation-not-allowed' ? 'O acesso por aparelho ainda precisa ser ativado no Firebase.' : 'Não foi possível entrar. Confira os dados e sua conexão.') : e.message);
+    } finally { setBusy(false); }
+  };
+  const login = <form className="flex flex-col items-center gap-3" onSubmit={e=>{e.preventDefault();run(async()=>{
+    await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+    await auth.signInWithEmailAndPassword(email,password);
+  });}}>
+    <input type="email" required autoComplete="username" aria-label="E-mail" placeholder="E-mail" value={email} onChange={e=>setEmail(e.target.value)} className="bg-gray-800 p-2 rounded w-64 max-w-full" />
+    <input type="password" required autoComplete="current-password" aria-label="Senha" placeholder="Senha" value={password} onChange={e=>setPassword(e.target.value)} className="bg-gray-800 p-2 rounded w-64 max-w-full" />
+    <button disabled={busy} className="bg-blue-600 px-4 py-2 rounded disabled:opacity-50">{busy?'Aguarde…':'Entrar'}</button>
+  </form>;
+  const messages = {checking:'Verificando acesso…',pending:'Aguardando autorização',blocked:'Acesso bloqueado',rejected:'Solicitação recusada',offline:'Conecte à internet para verificar sua autorização.',error:'Não foi possível verificar o acesso. Confira a conexão e abra novamente.',configuration:'Configuração do administrador pendente.'};
+  return <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
+    <ZebrolTitle />
+    {messages[status] && <p role="status">{messages[status]}</p>}
+    {status === 'login' && login}
+    {['login','request'].includes(status) && <>
+      {!requesting && <button className="text-blue-400 p-3" onClick={()=>setRequesting(true)}>Solicitar acesso</button>}
+      {requesting && <form className="flex flex-col items-center gap-3" onSubmit={e=>{e.preventDefault();run(()=>requestDeviceAccess(name));}}>
+        <input required maxLength={60} aria-label="Nome de usuário" placeholder="Nome de usuário" value={name} onChange={e=>setName(e.target.value)} className="bg-gray-800 p-2 rounded w-64 max-w-full" />
+        <button disabled={busy} className="bg-blue-600 px-4 py-2 rounded disabled:opacity-50">{busy?'Enviando…':'Enviar solicitação'}</button>
+      </form>}
+    </>}
+    {['pending','blocked','rejected'].includes(status) && <p className="text-gray-400 text-sm">Código: {auth.currentUser?.uid.slice(-8)}</p>}
+    {!['login','checking','configuration'].includes(status) && <details className="space-y-3"><summary className="cursor-pointer text-gray-400">Administrador</summary>{login}</details>}
+    {error && <p role="alert" className="text-red-300 max-w-sm">{error}</p>}
+  </div>;
+}
+
+function AccessPanel({ onClose }) {
+  const [requests,setRequests] = useState([]);
+  const [error,setError] = useState('');
+  const [loading,setLoading] = useState(true);
+  const [busy,setBusy] = useState('');
+  const [deleteRequest,setDeleteRequest] = useState(null);
+  const deleteLock=useRef(false);
+  const removeRequest = async () => {
+    if(!deleteRequest || deleteLock.current || busy)return;
+    deleteLock.current=true;setBusy(deleteRequest.id);setError('');
+    try{await deleteDeviceRequest(deleteRequest.id);setDeleteRequest(null);}
+    catch(e){setError(e.message);setDeleteRequest(null);}
+    finally{deleteLock.current=false;setBusy('');}
+  };
+  useEffect(()=>deviceRequests().onSnapshot(snap=>{
+    setRequests(snap.docs.map(d=>({...d.data(),id:d.id})).sort((a,b)=>a.name.localeCompare(b.name,'pt-BR')));
+    setLoading(false); setError('');
+  },()=>{setError('Não foi possível carregar os acessos. Confira sua conexão e as regras do Firebase.');setLoading(false);}),[]);
+  useEffect(()=>{
+    const old=document.body.style.overflow;document.body.style.overflow='hidden';
+    const escape=e=>{if(e.key==='Escape')onClose();};window.addEventListener('keydown',escape);
+    return()=>{document.body.style.overflow=old;window.removeEventListener('keydown',escape);};
+  },[]);
+  const change = async (row,status) => {
+    if(busy) return;
+    const action={approved:'Autorizar',blocked:'Bloquear',rejected:'Recusar'}[status];
+    if(!window.confirm(action+' o acesso de '+row.name+'?'))return;
+    setBusy(row.id);setError('');
+    try{await changeDeviceAccess(row.id,status);}catch(e){setError(e.message);}finally{setBusy('');}
+  };
+  return <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:100}}>
+    {deleteRequest && <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:115}}>
+      <div role="alertdialog" aria-modal="true" aria-labelledby="delete-request-title" className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full space-y-4 text-center">
+        <p id="delete-request-title">Deseja excluir definitivamente este pedido de acesso?</p>
+        <div className="flex gap-4">
+          <button disabled={!!busy} onClick={()=>setDeleteRequest(null)} className="flex-1 bg-gray-700 p-2 rounded-xl">CANCELAR</button>
+          <button disabled={!!busy} onClick={removeRequest} className="flex-1 bg-red-600 p-2 rounded-xl disabled:opacity-50">EXCLUIR</button>
+        </div>
+      </div>
+    </div>}
+    <div role="dialog" aria-modal="true" aria-labelledby="access-title" className="mobile-panel bg-gray-900 rounded-xl max-w-md p-4 gap-4">
+      <div className="flex items-center justify-between"><h2 id="access-title" className="text-xl font-bold">Acessos</h2><button autoFocus aria-label="Fechar acessos" onClick={onClose} className="text-red-400 text-2xl px-2">×</button></div>
+      {error && <p role="alert" className="text-red-300">{error}</p>}
+      {loading && <p>Carregando…</p>}
+      <div className="mobile-scroll space-y-5">
+      {[['pending','Aguardando aprovação'],['approved','Autorizados'],['blocked','Bloqueados'],['rejected','Recusados']].map(([status,title])=>{
+        const rows=requests.filter(r=>r.status===status);
+        return <section key={status} className="space-y-2"><h3 className="font-bold">{title} — {rows.length}</h3>
+          {!rows.length && <p className="text-sm text-gray-400">Nenhum acesso</p>}
+          {rows.map(row=><div key={row.id} className="bg-gray-800 rounded p-3 space-y-2">
+            <p className="font-semibold break-words">{row.name}</p><p className="text-xs text-gray-400">Código: {row.id.slice(-8)}</p>
+            <div className="flex flex-wrap gap-3">
+              {status!=='approved' && <button disabled={!!busy} onClick={()=>change(row,'approved')} className="text-green-400 disabled:opacity-50">Autorizar</button>}
+              {status==='pending' && <button disabled={!!busy} onClick={()=>change(row,'rejected')} className="text-red-400 disabled:opacity-50">Recusar</button>}
+              {['blocked','rejected'].includes(status) && <button disabled={!!busy} aria-label={'Excluir pedido de '+row.name} onClick={()=>setDeleteRequest(row)} className="text-red-400 disabled:opacity-50">🗑️</button>}
+              {status==='approved' && <button disabled={!!busy} onClick={()=>change(row,'blocked')} className="text-red-400 disabled:opacity-50">Bloquear</button>}
+            </div>
+          </div>)}
+        </section>;
+      })}
+      </div>
+    </div>
+  </div>;
+}
+
+function AccessWatermark({ user }) {
+  if (!user || user.isAdmin) return null;
+  const name = String(user.name || ('Acesso ' + user.authUid.slice(-8))).trim().slice(0,60);
+  const escapeXml = value => value.replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
+  const lines = Array.from(name).reduce((all,char,index) => {
+    const line = Math.floor(index / 30); all[line] = (all[line] || '') + char; return all;
+  }, []);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="135" viewBox="0 0 240 135"><g transform="rotate(-25 120 67)" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="600" fill="white" stroke="black" stroke-width="0.6" paint-order="stroke" opacity="0.16">${lines.map((line,i)=>`<text x="120" y="${67+i*14}">${escapeXml(line)}</text>`).join('')}</g></svg>`;
+  return ReactDOM.createPortal(<div aria-hidden="true" style={{position:'fixed',inset:0,zIndex:2147483647,pointerEvents:'none',userSelect:'none',backgroundImage:`url("data:image/svg+xml,${encodeURIComponent(svg)}")`,backgroundRepeat:'repeat'}} />,document.body);
+}
+
+function AlertBolt({ style }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 160" aria-hidden="true" focusable="false" style={style}>
+    <path fill="currentColor" d="M53 3 H82 L56 48 L79 40 L57 88 L79 80 L30 157 L42 103 L20 111 L37 65 L13 74 Z" />
+  </svg>;
+}
+
+function ZebrolTitle() {
+  return <h1 className="text-3xl font-bold text-center" style={{position:'relative',isolation:'isolate',width:'fit-content',marginLeft:'auto',marginRight:'auto',padding:'13px 8px',lineHeight:'36px'}}>
+    <AlertBolt style={{position:'absolute',height:62,width:39,left:'50%',top:'50%',transform:'translate(-50%, -50%)',color:'#dc2626',zIndex:0,pointerEvents:'none'}} />
+    <span style={{position:'relative',zIndex:1,textShadow:'0 1px 3px #000, 0 0 2px #000'}}>ZEBROL</span>
+  </h1>;
+}
+
+function generalVehicleDateOrder(value) {
+  const text=String(value||'').trim();
+  let match=text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  let year,month,day;
+  if(match){[,year,month,day]=match;}
+  else {match=text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/);if(!match)return -Infinity;[,day,month,year]=match;if(year.length===2)year='20'+year;}
+  const date=new Date(Date.UTC(Number(year),Number(month)-1,Number(day)));
+  if(date.getUTCFullYear()!==Number(year)||date.getUTCMonth()!==Number(month)-1||date.getUTCDate()!==Number(day))return -Infinity;
+  return date.getTime();
+}
+function compareGeneralVehicles(a,b) {
+  const first=generalVehicleDateOrder(a.date),second=generalVehicleDateOrder(b.date);
+  return first===second ? String(a.plate||'').localeCompare(String(b.plate||''),'pt-BR') : first>second ? -1 : 1;
+}
+
+function formatGeneralVehicleDate(value) {
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')))return String(value||'');
+  const [year,month,day]=value.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+// Pesquisa local: somente campos textuais explicitamente permitidos.
+function normalizeSearch(value) {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+}
+function searchText(row,general=false) {
+  const fields=general ? ['plate','model','color','year','date'] :
+    row.type==='vehicle' ? ['name','model','ownerName','alert','description'] :
+    ['name','vulgo','faction','cpf','birth','mother','infopem','address','description'];
+  const values=fields.map(field=>normalizeSearch(row[field]));
+  if(general)values.push(normalizeSearch(formatGeneralVehicleDate(row.date)));
+  return values.join(' ').replace(/[.\s/\-]+/g,'');
+}
+function searchWords(query) {
+  return normalizeSearch(query).trim().split(/\s+/).map(word=>word.replace(/[./\-]/g,'')).filter(Boolean);
+}
+function matchesSearch(text,words) { return words.every(word=>text.includes(word)); }
+
+function GeneralVehiclesPreview({user,search,onOpen}) {
+  const [rows,setRows]=useState([]);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    let active=true,serverArrived=false;
+    const key=user.uid+'~general';
+    offline.getList(key).then(data=>{if(active&&!serverArrived){setRows([...data].sort(compareGeneralVehicles));if(!navigator.onLine)setLoading(false);}}).catch(()=>{});
+    const unsub=generalVehicles.collection().onSnapshot({includeMetadataChanges:true},snap=>{
+      if(!active || snap.metadata.hasPendingWrites || snap.metadata.fromCache)return;
+      serverArrived=true;
+      const data=snap.docs.map(doc=>({...doc.data(),id:doc.id})).sort(compareGeneralVehicles);
+      setRows(data);setLoading(false);offline.putList(key,data).catch(()=>{});
+    },()=>{if(active)setLoading(false);});
+    const disconnected=()=>{if(active)setLoading(false);};window.addEventListener('offline',disconnected);
+    return()=>{active=false;unsub();window.removeEventListener('offline',disconnected);};
+  },[user.uid]);
+  const indexed=useMemo(()=>rows.map(row=>({row,text:searchText(row,true)})),[rows]);
+  const words=useMemo(()=>searchWords(search),[search]);
+  const matching=useMemo(()=>indexed.filter(entry=>matchesSearch(entry.text,words)).map(entry=>entry.row),[indexed,words]);
+  const visible=words.length ? matching : rows.slice(0,4);
+  if(words.length&&!matching.length)return null;
+  return <button type="button" onClick={onOpen} className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative flex flex-col" aria-label="Abrir caráter geral">
+    <span className="w-full text-center font-semibold text-xs leading-tight break-words">CARÁTER GERAL</span>
+    <span aria-live="polite" className="w-full flex-1 flex flex-col justify-center overflow-hidden px-1 py-1 text-left" style={{aspectRatio:'3 / 4',...(words.length?{overflowY:'auto'}:{})}}>
+    {loading&&!rows.length ? <span className="text-center text-[10px] text-gray-400">Carregando…</span> : !rows.length ? <span className="text-center text-[10px] text-gray-400">Nenhum veículo</span> : <>
+      {visible.map(row=><span key={row.id} className="block border-b border-gray-800 py-1 min-w-0">
+        <span className="block text-[10px] font-bold truncate">{row.plate}</span>
+        <span className="block text-[9px] text-gray-400 truncate">{row.model}</span>
+      </span>)}
+      {!words.length && rows.length>visible.length && <span className="block pt-1 text-center text-[9px] text-gray-400">+{rows.length-visible.length} veículo{rows.length-visible.length===1?'':'s'}</span>}
+    </>}
+  </span></button>;
+}
+
+function GeneralVehiclesPanel({user,onClose}) {
+  const [rows,setRows]=useState([]);
+  const [draft,setDraft]=useState(null);
+  const [removing,setRemoving]=useState(null);
+  const [actionMode,setActionMode]=useState(null);
+  const [error,setError]=useState('');
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const busy=useRef(false);
+  useEffect(()=>{
+    let active=true,serverArrived=false;
+    const key=user.uid+'~general';
+    offline.getList(key).then(data=>{if(active&&!serverArrived){setRows([...data].sort(compareGeneralVehicles));if(!navigator.onLine)setLoading(false);}}).catch(()=>{});
+    const unsub=generalVehicles.collection().onSnapshot({includeMetadataChanges:true},snap=>{
+      if(!active || snap.metadata.hasPendingWrites || snap.metadata.fromCache)return;
+      serverArrived=true;
+      const data=snap.docs.map(doc=>({...doc.data(),id:doc.id})).sort(compareGeneralVehicles);
+      setRows(data);setLoading(false);setError('');
+      offline.putList(key,data).catch(()=>{});
+    },()=>{if(active){setLoading(false);setError('Não foi possível atualizar a lista. Confira sua conexão e as regras do Firebase.');}});
+    const disconnected=()=>{if(active)setLoading(false);};window.addEventListener('offline',disconnected);
+    return()=>{active=false;unsub();window.removeEventListener('offline',disconnected);};
+  },[user.uid]);
+  useEffect(()=>{
+    const previous=document.body.style.overflow;document.body.style.overflow='hidden';
+    return()=>{document.body.style.overflow=previous;};
+  },[]);
+  const edit=row=>{if(busy.current)return;setError('');setActionMode(null);setDraft({...row,date:row.date||'',expectedVersion:row.version});};
+  const add=()=>{if(busy.current)return;setError('');setActionMode(null);setDraft({id:generalVehicles.collection().doc().id,plate:'',model:'',color:'',year:'',date:'',expectedVersion:null});};
+  const selectAction=row=>{
+    if(busy.current || draft)return;
+    if(actionMode==='edit')edit(row);
+    if(actionMode==='delete'){setError('');setActionMode(null);setRemoving(row);}
+  };
+  const commit=async()=>{
+    if(!draft || busy.current)return;
+    busy.current=true;setSaving(true);setError('');
+    try{await generalVehicles.save(user.uid,draft.id,draft,draft.expectedVersion);setDraft(null);}
+    catch(e){setError(e.message);}finally{busy.current=false;setSaving(false);}
+  };
+  const remove=async()=>{
+    if(!removing || busy.current)return;
+    busy.current=true;setSaving(true);setError('');
+    try{await generalVehicles.remove(user.uid,removing.id,removing.version);setRemoving(null);if(draft?.id===removing.id)setDraft(null);}
+    catch(e){setError(e.message);setRemoving(null);}finally{busy.current=false;setSaving(false);}
+  };
+  return <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:90}}>
+    <div role="dialog" aria-modal="true" aria-labelledby="general-title" className="mobile-panel bg-gray-900 rounded max-w-xl">
+      <div className="mobile-header relative"><h2 id="general-title" className="w-full text-center font-semibold pr-6">CARÁTER GERAL</h2><button aria-label="Fechar caráter geral" disabled={saving} onClick={onClose} className="absolute right-2 text-red-400 text-2xl px-2">×</button></div>
+      <div className="mobile-scroll p-3 space-y-3">
+        {error && <p role="alert" className="text-red-300 text-sm">{error}</p>}
+        {loading && <p role="status" className="text-gray-400 text-sm">Carregando…</p>}
+        <table className="w-full text-xs sm:text-sm" style={{tableLayout:'fixed',borderCollapse:'collapse'}}>
+          <colgroup><col style={{width:'21%'}}/><col style={{width:'25%'}}/><col style={{width:'19%'}}/><col style={{width:'13%'}}/><col style={{width:'22%'}}/></colgroup>
+          <thead><tr>{['PLACA','MODELO','COR','ANO','DATA'].map(label=><th key={label} className="text-left p-1 font-semibold text-[10px] sm:text-sm" style={{borderBottom:'1px solid rgba(156,163,175,0.15)'}}>{label}</th>)}</tr></thead>
+          <tbody>{rows.map(row=><tr
+            key={row.id}
+            onClick={()=>selectAction(row)}
+            onKeyDown={event=>{if(actionMode&&(event.key==='Enter'||event.key===' ')){event.preventDefault();selectAction(row);}}}
+            tabIndex={actionMode?0:undefined}
+            aria-label={actionMode ? (actionMode==='edit'?'Editar ':'Apagar ')+row.plate : undefined}
+            className={actionMode?'cursor-pointer hover:bg-gray-800 focus:bg-gray-800 focus:outline-none':''}
+          >
+            {[row.plate,row.model,row.color,row.year,formatGeneralVehicleDate(row.date)].map((value,i)=><td key={i} className="align-top p-1 break-words text-[10px] sm:text-sm" style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>{value||'—'}</td>)}
+          </tr>)}
+          {draft && <>
+            <tr>{[
+              ['plate','Placa',20],['model','Modelo',120],['color','Cor',60],['year','Ano',20],['date','Data',30]
+            ].map(([key,label,max])=><td key={key} className="align-top p-1" style={{borderBottom:'1px solid rgba(156,163,175,0.10)'}}>
+              <input
+                required={key==='plate'||key==='model'}
+                aria-label={label}
+                title={label}
+                type="text"
+                inputMode="text"
+                maxLength={max}
+                disabled={saving}
+                value={draft[key]||''}
+                onChange={e=>setDraft(d=>({...d,[key]:e.target.value}))}
+                onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commit();}}}
+                className="w-full min-w-0 bg-gray-800 p-1 rounded"
+                style={{fontSize:'16px'}}
+              />
+            </td>)}</tr>
+            <tr><td colSpan="5" className="pt-2"><div className="flex gap-2"><button type="button" disabled={saving} onClick={commit} className="flex-1 bg-blue-600 p-2 rounded">{saving?'Salvando…':'Salvar'}</button><button type="button" disabled={saving} onClick={()=>setDraft(null)} className="flex-1 bg-gray-700 p-2 rounded">Cancelar</button></div></td></tr>
+          </>}
+          </tbody>
+        </table>
+        {!loading&&!rows.length && <p className="text-gray-400 text-sm">Nenhum veículo cadastrado.</p>}
+        {actionMode && <p role="status" className="text-center text-sm text-gray-300">Toque no veículo que deseja {actionMode==='edit'?'editar':'apagar'}.</p>}
+        <div className="flex items-center justify-center gap-3 border-t border-gray-800 pt-2">
+          <button type="button" disabled={saving||!!draft} onClick={add} aria-label="Adicionar veículo" title="Adicionar veículo" className="px-3 text-blue-400 text-3xl disabled:opacity-50">+</button>
+          <button type="button" disabled={saving||!!draft||!rows.length} onClick={()=>setActionMode(mode=>mode==='edit'?null:'edit')} aria-label="Editar veículo" aria-pressed={actionMode==='edit'} title="Editar veículo" className="px-3 text-blue-400 text-2xl disabled:opacity-50">✏️</button>
+          {user.isAdmin && <button type="button" disabled={saving||!!draft||!rows.length} onClick={()=>setActionMode(mode=>mode==='delete'?null:'delete')} aria-label="Apagar veículo" aria-pressed={actionMode==='delete'} title="Apagar veículo" className="px-3 text-red-400 text-2xl disabled:opacity-50">🗑️</button>}
+        </div>
+        {removing && <div role="alertdialog" aria-modal="true" className="bg-gray-800 p-3 rounded space-y-3"><p>Remover o veículo {removing.plate}?</p><div className="flex gap-2"><button disabled={saving} onClick={()=>setRemoving(null)} className="flex-1 bg-gray-700 p-2 rounded">CANCELAR</button><button disabled={saving} onClick={remove} className="flex-1 bg-red-600 p-2 rounded">EXCLUIR</button></div></div>}
+      </div>
+    </div>
+  </div>;
+}
+
+const serviceInformation=ZebrolServiceInformation.create(db,dataOwner,maySync,()=>auth.currentUser?.uid===ZEBROL_ADMIN_UID,()=>navigator.onLine,()=>firebase.firestore.FieldValue.serverTimestamp(),notifications.event);
+function ServiceInformation({user}) {
+  const [open,setOpen]=useState(false),[rows,setRows]=useState([]),[error,setError]=useState('');
+  useEffect(()=>{const show=()=>setOpen(true);window.addEventListener('zebrol-open-service',show);return()=>window.removeEventListener('zebrol-open-service',show);},[]);
+  useEffect(()=>{
+    let active=true,received=false;const key=user.uid+'~service-information';
+    offline.getList(key).then(data=>{if(active&&!received)setRows(data);}).catch(()=>{});
+    const unsub=serviceInformation.collection().onSnapshot({includeMetadataChanges:true},snap=>{
+      if(!active||snap.metadata.hasPendingWrites||snap.metadata.fromCache)return;
+      received=true;const data=snap.docs.map(doc=>({...doc.data(),id:doc.id}));
+      data.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0)||a.id.localeCompare(b.id));
+      setRows(data);setError('');offline.putList(key,data).catch(()=>{});
+    },()=>{if(active)setError('Não foi possível atualizar as informações. Confira a conexão e as permissões.');});
+    return()=>{active=false;unsub();};
+  },[user.uid]);
+  return <><button type="button" aria-label={rows.length?'Informações do serviço: há registros':'Informações do serviço'} onClick={()=>setOpen(true)} style={{position:'absolute',left:'calc((100% - 16px) / 6)',top:'50%',transform:'translate(-50%, -50%)'}} className="text-2xl px-2">🚨{rows.length>0&&<span aria-hidden="true" className="absolute right-1 top-1 w-1.5 h-1.5 rounded-full bg-red-400"/>}</button>
+    {open&&ReactDOM.createPortal(<ServicePanel user={user} rows={rows} loadError={error} onClose={()=>setOpen(false)}/>,document.body)}</>;
+}
+
+function ServicePanel({user,rows,loadError,onClose}) {
+  const [draft,setDraft]=useState(null);
+  const [removing,setRemoving]=useState(null);
+  const [actionMode,setActionMode]=useState(null);
+  const [error,setError]=useState('');
+  const [saving,setSaving]=useState(false);
+  const busy=useRef(false);
+
+  useEffect(()=>{
+    const previous=document.body.style.overflow;document.body.style.overflow='hidden';
+    return()=>{document.body.style.overflow=previous;};
+  },[]);
+  const edit=row=>{if(busy.current)return;setError('');setActionMode(null);setDraft({...row,date:row.date||'',expectedVersion:row.version});};
+  const add=()=>{if(busy.current)return;setError('');setActionMode(null);setDraft({id:serviceInformation.collection().doc().id,date:'',text:'',expectedVersion:null});};
+  const selectAction=row=>{
+    if(busy.current || draft)return;
+    if(actionMode==='edit')edit(row);
+    if(actionMode==='delete'){setError('');setActionMode(null);setRemoving(row);}
+  };
+  const commit=async()=>{
+    if(!draft || busy.current)return;
+    busy.current=true;setSaving(true);setError('');
+    try{await serviceInformation.save(user.uid,draft.id,draft,draft.expectedVersion);setDraft(null);}
+    catch(e){setError(e.message);}finally{busy.current=false;setSaving(false);}
+  };
+  const remove=async()=>{
+    if(!removing || busy.current)return;
+    busy.current=true;setSaving(true);setError('');
+    try{await serviceInformation.remove(user.uid,removing.id,removing.version);setRemoving(null);if(draft?.id===removing.id)setDraft(null);}
+    catch(e){setError(e.message);setRemoving(null);}finally{busy.current=false;setSaving(false);}
+  };
+  return <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:90}}>
+    <div role="dialog" aria-modal="true" aria-labelledby="service-information-title" className="mobile-panel bg-gray-900 rounded max-w-xl">
+      <div className="mobile-header relative"><h2 id="service-information-title" className="w-full text-center font-semibold pr-6">INFORMAÇÕES DO SERVIÇO</h2><button aria-label="Fechar informações do serviço" disabled={saving} onClick={onClose} className="absolute right-2 text-red-400 text-2xl px-2">×</button></div>
+      <div className="mobile-scroll p-3 space-y-3">
+        {error && <p role="alert" className="text-red-300 text-sm">{error}</p>}
+        {loadError && <p role="alert" className="text-red-300 text-sm">{loadError}</p>}
+        <div className="space-y-1">
+          {rows.map(row=><div key={row.id} onClick={()=>selectAction(row)} onKeyDown={e=>{if(actionMode&&(e.key==='Enter'||e.key===' ')){e.preventDefault();selectAction(row);}}} tabIndex={actionMode?0:undefined} role={actionMode?'button':undefined} className={'py-2 text-xs sm:text-sm '+(actionMode?'cursor-pointer hover:bg-gray-800 focus:bg-gray-800':'')} style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>
+            <p className="whitespace-pre-wrap">{row.text}</p>
+          </div>)}
+        </div>
+        {draft&&<div className="space-y-2">
+          <textarea aria-label="Informações do serviço" rows={6} maxLength={20000} value={draft.text||''} disabled={saving} onChange={e=>setDraft(d=>({...d,text:e.target.value}))} className="w-full bg-gray-800 p-2 rounded" style={{fontSize:16}}/>
+          <div className="flex gap-2"><button type="button" disabled={saving} onClick={commit} className="flex-1 bg-blue-600 p-2 rounded">{saving?'Salvando…':'Salvar'}</button><button type="button" disabled={saving} onClick={()=>setDraft(null)} className="flex-1 bg-gray-700 p-2 rounded">Cancelar</button></div>
+        </div>}
+        {!rows.length && <p className="text-gray-400 text-sm">Nenhum registro cadastrado.</p>}
+        {actionMode && <p role="status" className="text-center text-sm text-gray-300">Toque no registro que deseja {actionMode==='edit'?'editar':'apagar'}.</p>}
+        <div className="flex items-center justify-center gap-3 border-t border-gray-800 pt-2">
+          <button type="button" disabled={saving||!!draft||!!removing} onClick={add} aria-label="Adicionar registro" title="Adicionar registro" className="px-3 text-blue-400 text-3xl disabled:opacity-50">+</button>
+          <button type="button" disabled={saving||!!draft||!!removing||!rows.length} onClick={()=>setActionMode(mode=>mode==='edit'?null:'edit')} aria-label="Editar registro" aria-pressed={actionMode==='edit'} title="Editar registro" className="px-3 text-blue-400 text-2xl disabled:opacity-50">✏️</button>
+          {user.isAdmin && <button type="button" disabled={saving||!!draft||!!removing||!rows.length} onClick={()=>setActionMode(mode=>mode==='delete'?null:'delete')} aria-label="Apagar registro" aria-pressed={actionMode==='delete'} title="Apagar registro" className="px-3 text-red-400 text-2xl disabled:opacity-50">🗑️</button>}
+        </div>
+        {removing && <div role="alertdialog" aria-modal="true" className="bg-gray-800 p-3 rounded space-y-3"><p>Excluir definitivamente estas informações?</p><div className="flex gap-2"><button disabled={saving} onClick={()=>setRemoving(null)} className="flex-1 bg-gray-700 p-2 rounded">CANCELAR</button><button disabled={saving} onClick={remove} className="flex-1 bg-red-600 p-2 rounded">EXCLUIR</button></div></div>}
+      </div>
+    </div>
+  </div>;
+}
+
+
+function Notifications({user,items,onOpen,onOpenGeneral}) {
+  const [open,setOpen]=useState(false),[rows,setRows]=useState([]),[cleared,setCleared]=useState(0),[error,setError]=useState(''),[busy,setBusy]=useState(false),[confirm,setConfirm]=useState(false);
+  const lock=useRef(false);
+  const millis=value=>value?.toMillis?value.toMillis():value?.seconds*1000+(value?.nanoseconds||0)/1000000||0;
+  useEffect(()=>{
+    let active=true,received=false,stateReceived=false;const key=user.uid+'~notifications';
+    offline.getList(key).then(data=>{if(active&&!received)setRows(data);}).catch(()=>{});
+    offline.getList(key+'~cleared').then(data=>{if(active&&!stateReceived)setCleared(data[0]?.value||0);}).catch(()=>{});
+    const unsub=notifications.collection().orderBy('createdAt','desc').limit(100).onSnapshot({includeMetadataChanges:true},snap=>{
+      if(!active||snap.metadata.hasPendingWrites||snap.metadata.fromCache)return;
+      received=true;const data=snap.docs.map(doc=>({...doc.data(),id:doc.id}));setRows(data);setError('');offline.putList(key,data).catch(()=>{});
+    },()=>{if(active)setError('Não foi possível atualizar as notificações. Confira a conexão e as permissões.');});
+    const stop=notifications.state(user.authUid).onSnapshot({includeMetadataChanges:true},snap=>{
+      if(!active||snap.metadata.hasPendingWrites||snap.metadata.fromCache)return;
+      stateReceived=true;const value=snap.exists?millis(snap.data().clearedAt):0;setCleared(value);offline.putList(key+'~cleared',[{value}]).catch(()=>{});
+    },()=>{if(active)setError('Não foi possível consultar a limpeza das notificações.');});
+    return()=>{active=false;unsub();stop();};
+  },[user.uid,user.authUid]);
+  useEffect(()=>{if(!open)return;const previous=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=previous;};},[open]);
+  const visible=rows.filter(row=>millis(row.createdAt)>cleared);
+  const labels={created:'Cadastro adicionado',edited:'Cadastro editado',alertOn:'Adicionado ao alerta geral',alertOff:'Retirado do alerta geral',deleted:'Cadastro excluído'};
+  const clear=async()=>{
+    if(lock.current)return;
+    if(!navigator.onLine){setError('Conecte à internet para limpar a lista.');return;}
+    lock.current=true;setBusy(true);setError('');
+    try{if(!maySync(user.uid))throw new Error('Acesso não autorizado.');await notifications.state(user.authUid).set({clearedAt:firebase.firestore.FieldValue.serverTimestamp()});setConfirm(false);setOpen(false);}
+    catch(e){setError(e.message);}finally{lock.current=false;setBusy(false);}
+  };
+  const select=row=>{if(row.kind==='general'){setOpen(false);setConfirm(false);onOpenGeneral();return;}if(row.kind==='service'){setOpen(false);setConfirm(false);window.dispatchEvent(new Event('zebrol-open-service'));return;}const item=items.find(item=>item.id===row.targetId);if(!item){setError('Este cadastro foi excluído ou ainda não está carregado neste aparelho.');return;}setOpen(false);setConfirm(false);onOpen(item);};
+  return <>{visible.length>0&&<button type="button" aria-label="Notificações" onClick={()=>setOpen(true)} style={{position:'absolute',right:'calc((100% - 16px) / 6)',top:'50%',transform:'translate(50%, -50%)'}} className="text-2xl px-2">🔔{visible.length>0&&<span className="absolute right-1 top-1 w-1.5 h-1.5 rounded-full bg-red-400" aria-hidden="true"/>}</button>}
+    {open&&ReactDOM.createPortal(<div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:90}}><div role="dialog" aria-modal="true" aria-labelledby="notifications-title" className="mobile-panel bg-gray-900 rounded max-w-xl">
+      <div className="mobile-header relative"><h2 id="notifications-title" className="w-full text-center font-semibold pr-6">NOTIFICAÇÕES</h2><button disabled={busy} onClick={()=>{setOpen(false);setConfirm(false);}} aria-label="Fechar notificações" className="absolute right-2 text-red-400 text-2xl px-2">×</button></div>
+      <div className="mobile-scroll p-3 space-y-3">
+        {error&&<p role="alert" className="text-red-300 text-sm">{error}</p>}
+        {!visible.length&&<p className="text-gray-400 text-sm">Nenhuma notificação.</p>}
+        {visible.map(row=><div key={row.id} className="py-2 text-xs sm:text-sm" style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>{row.kind==='service'?({created:'Informação do serviço adicionada',edited:'Informação do serviço editada',deleted:'Informação do serviço excluída'}[row.action]||'Informação do serviço atualizada'):(labels[row.action]||'Cadastro atualizado')}: {row.action==='deleted'?<span>{row.name}</span>:<button onClick={()=>select(row)} className="text-blue-400 text-left">{row.name}</button>}</div>)}
+        <div className="flex justify-center border-t border-gray-800 pt-2"><button disabled={busy||!visible.length} onClick={()=>setConfirm(true)} aria-label="Limpar minhas notificações" className="px-3 text-red-400 text-2xl disabled:opacity-50">🗑️</button></div>
+      </div>
+        {confirm&&<div role="alertdialog" aria-label="Confirmar limpeza das notificações" style={{flexShrink:0,maxHeight:"50%",overflowY:"auto"}} className="bg-gray-800 p-3 rounded space-y-3"><p>Limpar suas notificações? Os cadastros serão preservados.</p><div className="flex gap-2"><button disabled={busy} onClick={()=>setConfirm(false)} className="flex-1 bg-gray-700 p-2 rounded">CANCELAR</button><button disabled={busy} onClick={clear} className="flex-1 bg-red-600 p-2 rounded">LIMPAR</button></div></div>}
+      </div></div>,document.body)}
+  </>;
+}
+
+let documentReaderModule;
+function loadDocumentReader(){
+  if(window.ZebrolDocumentOCR)return Promise.resolve(window.ZebrolDocumentOCR);
+  if(!documentReaderModule)documentReaderModule=new Promise((resolve,reject)=>{
+    const script=document.createElement('script');script.src='./document-ocr.js?v=26';
+    const timer=setTimeout(()=>{script.remove();documentReaderModule=null;reject(new Error('Não foi possível carregar o leitor. Confira a conexão.'));},20000);
+    script.onload=()=>{clearTimeout(timer);if(window.ZebrolDocumentOCR)resolve(window.ZebrolDocumentOCR);else{documentReaderModule=null;reject(new Error('Leitor indisponível.'));}};
+    script.onerror=()=>{clearTimeout(timer);script.remove();documentReaderModule=null;reject(new Error('Não foi possível carregar o leitor. Confira a conexão.'));};document.head.appendChild(script);
+  });return documentReaderModule;
+}
+function DocumentReader({source,onClose,onResult}) {
+  const [busy,setBusy]=useState(false),[error,setError]=useState('');
+  const job=useRef(null),alive=useRef(true),locked=useRef(false),generation=useRef(0);
+  const cancel=()=>{generation.current++;job.current?.cancel();job.current=null;onClose();};
+  useEffect(()=>{
+    alive.current=true;
+    const leave=()=>cancel();
+    window.addEventListener('pagehide',leave);
+    return()=>{alive.current=false;generation.current++;job.current?.cancel();job.current=null;window.removeEventListener('pagehide',leave);};
+  },[]);
+  const read=async source=>{
+    if(locked.current)return;
+    if(!navigator.onLine){setError('Conecte à internet para ler o documento.');return;}
+    locked.current=true;setBusy(true);setError('');const token=++generation.current;
+    try{
+      const module=await loadDocumentReader();if(!alive.current||token!==generation.current)return;
+      job.current=module.start(source);source=null;const fields=await job.current.promise;job.current=null;
+      if(!alive.current||token!==generation.current)return;
+      if(!Object.keys(fields).length){setError('Não foi possível identificar dados com segurança. Tente uma foto nítida, sem reflexos, ou preencha manualmente.');return;}
+      onResult(fields);onClose();
+    }catch(e){if(alive.current&&token===generation.current)setError(e.message||'Não foi possível ler a foto. Preencha manualmente ou tente novamente.');}
+    finally{source=null;if(alive.current&&token===generation.current){locked.current=false;setBusy(false);}}
+  };
+  useEffect(()=>{if(source)read(source);},[]);
+  return ReactDOM.createPortal(<div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:120}}><div role="dialog" aria-modal="true" aria-labelledby="ocr-title" className="mobile-panel bg-gray-900 rounded max-w-sm">
+    <div className="mobile-header relative"><h2 id="ocr-title" className="font-semibold pr-6">Ler documento</h2><button type="button" onClick={cancel} aria-label="Fechar leitura do documento" className="text-red-400 text-2xl px-2">×</button></div>
+    <div className="mobile-scroll p-4 space-y-3">
+      <p className="text-sm text-gray-400">A foto é usada somente para leitura. Confira os dados antes de salvar o cadastro.</p>
+      {error&&<p role="alert" className="text-red-300 text-sm">{error}</p>}
+      {!error&&<p role="status" className="text-sm text-gray-300">Lendo documento...</p>}
+      <button type="button" onClick={cancel} className="w-full bg-gray-700 p-2 rounded">Cancelar</button>
+    </div>
+  </div></div>,document.body);
+}
+
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [accessStatus,setAccessStatus] = useState('checking');
+  const [showAccess,setShowAccess] = useState(false);
+  const [showGeneral,setShowGeneral] = useState(false);
+  const [duplicate,setDuplicate] = useState(null);
+  useEffect(()=>{
+    const show=e=>{if(e.detail.uid===user?.uid)setDuplicate(e.detail);};
+    offlineChanges.addEventListener('duplicate',show);
+    return ()=>offlineChanges.removeEventListener('duplicate',show);
+  },[user]);
+  const showPending = async item => {
+    if(item._duplicateId) {
+      let existing=items.find(row=>row.id===item._duplicateId);
+      if(!existing && navigator.onLine) {
+        try { const snap=await photoRefs(user.uid,item._duplicateId).item.get({source:'server'}); if(snap.exists)existing={...snap.data(),id:snap.id}; }
+        catch(e){window.alert(saveErrorMessage(e));return;}
+      }
+      setDuplicate({existing,pendingId:item.id}); return;
+    }
+    if(item._pendingError)window.alert(item._pendingError);
+    if(navigator.onLine)syncPending(user.uid);
+  };
+  const cancelDuplicate = async () => {
+    try { if(duplicate?.pendingId) { await offline.discardPending(user.uid,duplicate.pendingId); announceOfflineChange(); } setDuplicate(null); }
+    catch(e){window.alert(saveErrorMessage(e));}
+  };
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [items, setItems] = useState([]);
+  const [listError, setListError] = useState('');
+  const [opening, setOpening] = useState(false);
+  const openSequence = useRef(0);
+  const [converting, setConverting] = useState(false);
+  const conversionLock = useRef(false);
+  const [conversionStatus, setConversionStatus] = useState('');
+  const conversionMode = new URLSearchParams(window.location.search).get('converterFotos') === '1';
+
+  const openDetails = async item => {
+    const sequence = ++openSequence.current;
+    const uid = user.uid;
+    let fullArrived = false;
+    setSelected({ ...item, image: item.image || '', _previewOnly: !item.image });
+    setOpening(true);
+    const apply = result => {
+      if (!maySync(uid) || sequence !== openSequence.current) return;
+      setSelected(current => current?.id === item.id ? { ...current, image: result.image || current.image || '', _previewOnly: result.previewOnly } : current);
+    };
+    offline.getThumb(uid,item.id,item.photoVersion).then(image => {
+      if(image && !fullArrived && !item.image)apply({image,previewOnly:true});
+    }).catch(()=>{});
+    try {
+      const result = await loadDetailPhoto(uid,item);
+      fullArrived = true;
+      apply(result);
+    } catch (_) { /* Keep the immediately opened text and available thumbnail. */ }
+    finally { if(sequence === openSequence.current)setOpening(false); }
+  };
+
+  const convertExistingPhotos = async () => {
+    if (conversionLock.current || !user) return;
+    if (!navigator.onLine) { setConversionStatus('A conversão precisa de conexão.'); return; }
+    const legacy = items.filter(item => item.image);
+    if (!legacy.length) { setConversionStatus('Não há fotos antigas para converter.'); return; }
+    if (!window.confirm('Converter as fotos antigas desta conta? Execute somente após ajustar as regras do Firebase e atualizar o aplicativo em todos os aparelhos.')) return;
+    if (!navigator.onLine) { setConversionStatus('Conecte-se antes de converter.'); return; }
+    conversionLock.current = true;
+    setConverting(true);
+    let completed = 0;
+    let skipped = 0;
+    try {
+      for (const item of legacy) {
+        setConversionStatus('Convertendo ' + (completed + skipped + 1) + ' de ' + legacy.length + '…');
+        if (await convertLegacyPhoto(user.uid, item)) completed++;
+        else skipped++;
+      }
+      setConversionStatus(completed + ' fotos convertidas. ' + skipped + ' registros alterados por outra sessão foram ignorados; execute novamente se necessário.');
+    } catch (error) {
+      setConversionStatus(completed + ' fotos convertidas. Processo interrompido: ' + saveErrorMessage(error) + ' As fotos restantes foram preservadas. Você pode tentar novamente.');
+    } finally {
+      conversionLock.current = false;
+      setConverting(false);
+    }
+  };
+  const [selected, setSelected] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const editingSnapshot=useRef(null);
+  const [formType, setFormType] = useState('person');
+  const [vehicleForm, setVehicleForm] = useState({ model: '', ownerName: '', ownerId: '', alert: '' });
+  const [ownerSearching, setOwnerSearching] = useState(false);
+  const personItems = items.filter(item => item.type !== 'vehicle');
+  const ownerSuggestions = personItems.filter(item => String(item.name || '').toLocaleLowerCase('pt-BR').includes(vehicleForm.ownerName.trim().toLocaleLowerCase('pt-BR')));
+  const switchFormType = () => {
+    if (busy || editingId) return;
+    setFormType(current => current === 'person' ? 'vehicle' : 'person');
+    setFormError('');
+    setOwnerSearching(false);
+  };
+
+  const [alertSaving, setAlertSaving] = useState(false);
+  const alertLock = useRef(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null); // ← ADICIONADO
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInput = useRef(null);
+  const revealSearch = () => {
+    const input=searchInput.current;
+    if(!input)return;
+    input.focus({preventScroll:true});
+    input.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});
+  };
+  useEffect(()=>{
+    if(!searchOpen)return;
+    const frame=requestAnimationFrame(revealSearch);
+    return()=>cancelAnimationFrame(frame);
+  },[searchOpen]);
+  const toggleSearch = () => {
+    const rect=searchInput.current?.getBoundingClientRect();
+    if(searchOpen && rect && rect.top>=0 && rect.bottom<=window.innerHeight){setSearchOpen(false);return;}
+    if(searchOpen)revealSearch();else setSearchOpen(true);
+  };
+  const [search, setSearch] = useState("");
+
+  const emptyForm = {
+    image: "",
+    name: "",
+    vulgo: "",
+    faction: "",
+    cpf: "",
+    birth: "",
+    mother: "",
+    infopem: "",
+    address: "",
+    latitude: null,
+    longitude: null,
+    description: ""
+  };
+
+  const [form, setForm] = useState(emptyForm);
+  const [ocrOpen,setOcrOpen]=useState(false),[ocrMessage,setOcrMessage]=useState('');
+  const [ocrSource,setOcrSource]=useState(null);
+  const documentInput=useRef(null),mainPhotoInput=useRef(null);
+  const closeDocument=()=>{setOcrOpen(false);setOcrSource(null);};
+  useEffect(()=>{setOcrOpen(false);setOcrSource(null);setOcrMessage('');},[showForm,editingId,formType,user]);
+  const receiveDocument = fields => {
+    fields={...fields};
+    if(!fields.mother&&fields._motherCandidate&&window.confirm('A leitura encontrou na filiação o nome '+fields._motherCandidate+'. Confirma que este é o nome da mãe? Cancelar mantém o campo atual.'))fields.mother=fields._motherCandidate;
+    delete fields._motherCandidate;
+    const allowed=['name','cpf','birth','mother'];
+    const labels={name:'Nome',cpf:'CPF',birth:'Nascimento',mother:'Nome da mãe'};
+    const conflicts=allowed.filter(key=>fields[key]&&String(form[key]||'').trim()&&form[key]!==fields[key]);
+    const overwrite=conflicts.length?window.confirm('A leitura encontrou valores diferentes em: '+conflicts.map(key=>labels[key]).join(', ')+'. Substituir esses campos? Cancelar mantém os valores atuais.'):false;
+    setForm(current=>{const next={...current};for(const key of allowed)if(fields[key]&&(!String(current[key]||'').trim()||overwrite))next[key]=fields[key];return next;});
+    setOcrMessage('Leitura concluída. Confira e corrija os dados antes de salvar. Campos não identificados foram mantidos.');
+  };
+  const [processingImage, setProcessingImage] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [saveStatus, setSaveStatus] = useState('');
+  const savingLock = useRef(false);
+  const imageLock = useRef(false);
+  const [locating,setLocating] = useState(false);
+  const [locationMessage,setLocationMessage] = useState('');
+  const locationSequence = useRef(0);
+  const locationLock = useRef(false);
+  useEffect(()=>{locationSequence.current++;locationLock.current=false;setLocating(false);setLocationMessage('');},[showForm,editingId,formType,user]);
+  const captureLocation = async () => {
+    if(locationLock.current || savingLock.current)return;
+    locationLock.current=true;setLocating(true);setLocationMessage('');
+    const sequence=++locationSequence.current;
+    try {
+      const coords=await ZebrolLocation.current();
+      if(sequence!==locationSequence.current)return;
+      setForm(previous=>({...previous,...coords}));
+      setLocationMessage('Localização capturada. Alterar o endereço remove esse ponto; preencha o endereço antes de tocar em 📍.');
+    }catch(error){if(sequence===locationSequence.current)setLocationMessage(error.message);}
+    finally {if(sequence===locationSequence.current){locationLock.current=false;setLocating(false);}}
+  };
+  const busy = saving || processingImage || locating || ocrOpen;
+  const [crop, setCrop] = useState(null);
+  const cropLock = useRef(false);
+  const cropCanvas = useRef(null);
+  const detailPanel = useRef(null);
+  const detailText = useRef(null);
+  const detailClose = useRef(null);
+  const detailActions = useRef(null);
+
+  useEffect(() => {
+    if (!selected || !detailPanel.current) return;
+    const panel = detailPanel.current;
+    const updatePhotoSize = () => {
+      if (!detailText.current || !detailClose.current || !detailActions.current) return;
+      const viewportHeight = window.visualViewport?.height || window.innerHeight;
+      const contentWidth = Math.max(1, Math.min(408, window.innerWidth - 16) - 24);
+      const naturalHeight = contentWidth * 4 / 3;
+      const textHeight = detailText.current.getBoundingClientRect().height;
+      // Reserve outer margins, controls, content padding and the photo/text gap.
+      const available = viewportHeight - 16 - detailClose.current.offsetHeight - detailActions.current.offsetHeight - 12 - textHeight - 8;
+      const minimumHeight = Math.min(naturalHeight, viewportHeight * 0.48);
+      const photoHeight = Math.min(naturalHeight, Math.max(minimumHeight, available));
+      panel.style.setProperty('--detail-photo-width', (photoHeight * 3 / 4) + 'px');
+    };
+    updatePhotoSize();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updatePhotoSize) : null;
+    if (observer) {
+      observer.observe(detailText.current);
+      observer.observe(panel);
+      observer.observe(detailClose.current);
+      observer.observe(detailActions.current);
+    }
+    window.addEventListener('resize', updatePhotoSize);
+    window.visualViewport?.addEventListener('resize', updatePhotoSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updatePhotoSize);
+      window.visualViewport?.removeEventListener('resize', updatePhotoSize);
+    };
+  }, [selected]);
+  const [cropZoom, setCropZoom] = useState(1);
+  const [cropX, setCropX] = useState(50);
+  const [cropY, setCropY] = useState(50);
+
+  useEffect(() => {
+    if (!crop || !cropCanvas.current) return;
+    const canvas = cropCanvas.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const width = crop.naturalWidth;
+    const height = crop.naturalHeight;
+    const scale = Math.max(750 / width, 1000 / height) * cropZoom;
+    const sourceWidth = 750 / scale;
+    const sourceHeight = 1000 / scale;
+    const left = (width - sourceWidth) * cropX / 100;
+    const top = (height - sourceHeight) * cropY / 100;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 750, 1000);
+    ctx.drawImage(crop, left, top, sourceWidth, sourceHeight, 0, 0, 750, 1000);
+  }, [crop, cropZoom, cropX, cropY]);
+
+  const cancelCrop = () => {
+    if (imageLock.current) return;
+    setCrop(null);
+    cropLock.current = false;
+    setFormError('');
+  };
+
+  const applyCrop = async () => {
+    if (imageLock.current || !cropCanvas.current) return;
+    imageLock.current = true;
+    setProcessingImage(true);
+    setFormError('');
+    try {
+      const blob = await new Promise(resolve => cropCanvas.current.toBlob(resolve, 'image/jpeg', 0.9));
+      if (!blob) throw new Error('Não foi possível preparar a foto. Tente outra imagem.');
+      const image = await compressPhoto(blob);
+      setForm(f => ({ ...f, image }));
+      setCrop(null);
+      cropLock.current = false;
+    } catch (error) {
+      setFormError(error.message);
+    } finally {
+      imageLock.current = false;
+      setProcessingImage(false);
+    }
+  };
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const update = () => {
+      document.documentElement.style.setProperty('--viewport-height', (viewport ? viewport.height : window.innerHeight) + 'px');
+      document.documentElement.style.setProperty('--viewport-top', (viewport ? viewport.offsetTop : 0) + 'px');
+    };
+    update();
+    window.addEventListener('resize', update);
+    viewport?.addEventListener('resize', update);
+    viewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      viewport?.removeEventListener('resize', update);
+      viewport?.removeEventListener('scroll', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected && !showForm && !confirmDelete) return;
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = oldOverflow; };
+  }, [selected, showForm, confirmDelete]);
+
+  useEffect(() => watchAccess(state => {
+    setAccessStatus(state.status); setUser(state.user); setShowAccess(false); setDuplicate(null); setShowGeneral(false);
+  }), []);
+
+  useEffect(() => {
+    openSequence.current++;
+    setOpening(false);
+    setSelected(null);
+    setShowForm(false);
+    setItems([]);
+    setListError('');
+    if (!user) return;
+    let active = true;
+    let generation = 0;
+    const uid = user.uid;
+    const refresh = async () => {
+      const ownGeneration = ++generation;
+      try {
+        const [rows,pending] = await Promise.all([offline.getList(uid),offline.getPending(uid)]);
+        if (active && ownGeneration === generation) setItems(offline.merge(rows,pending));
+      } catch (_) {
+        if (active) setListError('O armazenamento local não está disponível. Não é possível cadastrar offline neste navegador.');
+      }
+    };
+    const reconnect = () => { refresh(); syncPending(uid); };
+    offlineChanges.addEventListener('change',refresh);
+    window.addEventListener('online',reconnect);
+    const visible = () => { if(document.visibilityState === 'visible') reconnect(); };
+    document.addEventListener('visibilitychange',visible);
+    const timer = setInterval(() => { if(document.visibilityState === 'visible') syncPending(uid); },15000);
+    refresh();
+    syncPending(uid);
+    const unsubscribe = db.collection('users').doc(dataOwner(uid)).collection('items')
+      .onSnapshot({ includeMetadataChanges: true }, async snap => {
+        if (!active || snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
+        const rows = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        try {
+          await offline.putList(uid,rows);
+          if(active) { setListError(''); await refresh(); }
+        } catch (_) {
+          if(active) { setItems(rows); setListError('Sem espaço local. Libere espaço antes de cadastrar offline.'); }
+        }
+      }, error => {
+        if(active && navigator.onLine) setListError('Não foi possível atualizar os cadastros. ' + saveErrorMessage(error));
+      });
+    return () => {
+      active = false;
+      unsubscribe();
+      clearInterval(timer);
+      offlineChanges.removeEventListener('change',refresh);
+      window.removeEventListener('online',reconnect);
+      document.removeEventListener('visibilitychange',visible);
+    };
+  }, [user]);
+
+  const handleChange = async e => {
+    const { name, value, files } = e.target;
+    if (savingLock.current) return;
+    if (name !== 'image') {
+      if(name==='address'){locationSequence.current++;locationLock.current=false;setLocating(false);setLocationMessage('');setForm(f=>ZebrolLocation.editAddress(f,value));return;}
+      setForm(f => ({ ...f, [name]: value }));
+      return;
+    }
+    const file = files && files[0];
+    if (!file || imageLock.current) return;
+    e.target.value = '';
+    imageLock.current = true;
+    setProcessingImage(true);
+    setFormError('');
+    try {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('Escolha uma foto JPG, PNG ou WebP.');
+      if (file.size > 20 * 1024 * 1024) throw new Error('Escolha uma foto de até 20 MB.');
+      const url = URL.createObjectURL(file);
+      let picture;
+      try {
+        picture = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Não foi possível abrir essa foto.'));
+          img.src = url;
+        });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      setCropZoom(1);
+      setCropX(50);
+      setCropY(50);
+      cropLock.current = true;
+      setCrop(picture);
+    } catch (error) {
+      setFormError(error.message + ' A foto anterior, se houver, foi mantida.');
+    } finally {
+      imageLock.current = false;
+      setProcessingImage(false);
+    }
+  };
+
+  const saveItem = async () => {
+    if (ocrOpen || savingLock.current || imageLock.current || locationLock.current) return;
+    if (cropLock.current) { setFormError('Confirme ou cancele o ajuste da foto antes de salvar.'); return; }
+    setFormError('');
+    if (!user) { setFormError('Entre novamente para salvar.'); return; }
+    if (editingId && !navigator.onLine) { setFormError('Edições precisam de conexão.'); return; }
+    if (formType === 'vehicle' && !vehicleForm.model.trim()) { setFormError('Informe o modelo do veículo.'); return; }
+    if (formType === 'vehicle' && vehicleForm.ownerId && !personItems.some(p => p.id === vehicleForm.ownerId)) { setFormError('O proprietário selecionado não está mais cadastrado. Selecione novamente.'); return; }
+    const payload = formType === 'vehicle'
+      ? { type: 'vehicle', name: vehicleForm.model.trim(), model: vehicleForm.model.trim(), ownerName: vehicleForm.ownerName.trim(), ownerId: vehicleForm.ownerId || '', alert: vehicleForm.alert.trim(), description: form.description, image: form.image }
+      : Object.fromEntries(Object.keys(emptyForm).map(key => [key, String(form[key] ?? '')]));
+    if(formType!=='vehicle')Object.assign(payload,ZebrolLocation.point(form)||{latitude:null,longitude:null});
+    // Conservative ceiling leaves room for Firestore document metadata.
+    if (new TextEncoder().encode(JSON.stringify(payload)).length > 700 * 1024) {
+      setFormError('O cadastro está muito grande. Escolha novamente a foto para reduzi-la ou diminua os textos.');
+      return;
+    }
+    savingLock.current = true;
+    setSaving(true);
+    setSaveStatus('Salvando e aguardando confirmação do servidor…');
+    const reminder = setTimeout(() => {
+      setSaveStatus('O servidor ainda não confirmou. Verifique a conexão e mantenha esta tela aberta. Não é necessário clicar novamente.');
+    }, 15000);
+    try {
+      const ref = db.collection('users').doc(dataOwner(user.uid)).collection('items');
+      const localDuplicate=ZebrolRecordGuard.findDuplicate(payload,navigator.onLine ? items.filter(row=>row._pending) : items,editingId);
+      if(localDuplicate){setDuplicate({existing:localDuplicate});return;}
+      if(navigator.onLine) {
+        const found=await recordGuard.check(payload,editingId);
+        if(found){setDuplicate({existing:found});return;}
+      }
+      if (!editingId) {
+        const uid = user.uid;
+        const id = ref.doc().id;
+        const image = payload.image;
+        const thumbnail = image ? await makeThumbnail(image) : '';
+        delete payload.image;
+        payload.hasPhoto = !!image;
+        payload.photoVersion = image ? crypto.randomUUID() : '';
+        await offline.enqueue(uid,id,payload,image,thumbnail);
+        // Completion here means the local transaction committed, never just a
+        // fire-and-forget write. The card stays pending until server confirmation.
+        announceOfflineChange();
+        navigator.storage?.persist?.().catch(() => {});
+        setForm(emptyForm);
+        setEditingId(null);
+        setShowForm(false);
+        setSelected(null);
+        syncPending(uid);
+        return;
+      }
+      const image=payload.image;
+      delete payload.image;
+      const thumbnail=image ? await makeThumbnail(image) : '';
+      payload.hasPhoto=!!image;
+      payload.photoVersion=image ? crypto.randomUUID() : '';
+      payload.image=firebase.firestore.FieldValue.delete();
+      await recordGuard.save({uid:user.uid,id:editingId,payload,image,thumbnail,editing:true,expected:editingSnapshot.current});
+      setForm(emptyForm);
+      setEditingId(null);
+      setShowForm(false);
+      setSelected(null);
+    } catch (error) {
+      if(error.code==='duplicate-person')setDuplicate({existing:error.duplicate});
+      else setFormError(saveErrorMessage(error));
+    } finally {
+      clearTimeout(reminder);
+      savingLock.current = false;
+      setSaving(false);
+      setSaveStatus('');
+    }
+  };
+
+  const toggleGeneralAlert = async () => {
+    if (alertLock.current || !selected || !user) return;
+    if (selected._pending || !navigator.onLine) { window.alert('Aguarde a sincronização e conecte-se para alterar o alerta.'); return; }
+    const targetId = selected.id;
+    const nextValue = selected.alertaGeral !== true;
+    if (!window.confirm(nextValue ? 'Ativar o alerta geral deste cadastro?' : 'Retirar o alerta geral deste cadastro?')) return;
+    if (!navigator.onLine) {
+      window.alert('Sem conexão. Conecte-se para alterar o alerta.');
+      return;
+    }
+    alertLock.current = true;
+    setAlertSaving(true);
+    try {
+      const alertBatch=db.batch();
+      alertBatch.update(db.collection('users').doc(dataOwner(user.uid)).collection('items').doc(targetId),{alertaGeral:nextValue});
+      notifications.event(nextValue?'alertOn':'alertOff',targetId,selected)(alertBatch);
+      await alertBatch.commit();
+      setSelected(current => current && current.id === targetId ? { ...current, alertaGeral: nextValue } : current);
+    } catch (error) {
+      window.alert('Não foi possível alterar o alerta geral. ' + saveErrorMessage(error));
+    } finally {
+      alertLock.current = false;
+      setAlertSaving(false);
+    }
+  };
+
+  const deleteItem = async () => {
+    if (!user?.isAdmin || !maySync(user.uid) || !confirmDeleteId) return;
+    if (!navigator.onLine || items.find(item => item.id === confirmDeleteId)?._pending) { window.alert('A exclusão precisa de conexão e de um cadastro sincronizado.'); return; }
+    try {
+      const refs = photoRefs(user.uid, confirmDeleteId);
+      const batch = db.batch();
+      batch.delete(refs.full);
+      batch.delete(refs.thumb);
+      batch.delete(refs.item);
+      notifications.event('deleted',confirmDeleteId,items.find(item=>item.id===confirmDeleteId)||{})(batch);
+      await batch.commit();
+      setConfirmDelete(false);
+      setConfirmDeleteId(null);
+      setSelected(null);
+    } catch (error) {
+      window.alert('Não foi possível excluir o cadastro. ' + saveErrorMessage(error));
+    }
+  };
+
+  const updateState = useRef(null);
+  updateState.current = {user,showForm,saving,processingImage,locating,converting,alertSaving,confirmDelete,selected,showAccess,showGeneral,duplicate,crop};
+  useEffect(()=>{
+    const check = async () => {
+      const safe = () => {
+        const state=updateState.current;
+        return !!state?.user && !offlineSyncRunning && !state.showForm && !state.saving && !state.processingImage && !state.locating && !state.converting && !state.alertSaving && !state.confirmDelete && !state.selected && !state.showAccess && !state.showGeneral && !state.duplicate && !state.crop && !document.querySelector('.mobile-overlay, [role="dialog"], [role="alertdialog"]');
+      };
+      if(!safe())return false;
+      try {
+        const local=await offline.open();
+        // A completed read-only transaction verifies the outbox is accessible.
+        // Pending records stay in IndexedDB across reload; only active writes block.
+        await new Promise((resolve,reject)=>{const tx=local.transaction(['pending'],'readonly');tx.objectStore('pending').count();tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error);});
+        return safe();
+      } catch (_) { return false; }
+    };
+    window.ZebrolCanUpdate=check;
+    window.dispatchEvent(new Event('zebrol-update-state'));
+    return()=>{if(window.ZebrolCanUpdate===check)delete window.ZebrolCanUpdate;};
+  },[]);
+  useEffect(()=>{window.dispatchEvent(new Event('zebrol-update-state'));});
+
+  const indexedItems=useMemo(()=>items.map(row=>({row,text:searchText(row)})),[items]);
+  const searchTokens=useMemo(()=>searchWords(search),[search]);
+  const filtered=useMemo(()=>indexedItems
+    .filter(entry=>matchesSearch(entry.text,searchTokens)).map(entry=>entry.row)
+    .sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''),"pt-BR",{sensitivity:"base"})),[indexedItems,searchTokens]);
+
+  if (!user) return <AccessGate status={accessStatus} />;
+
+  return (
+    <div className="min-h-screen p-6 space-y-6">
+      <AccessWatermark user={user} />
+      {showGeneral && <GeneralVehiclesPanel user={user} onClose={()=>setShowGeneral(false)} />}
+      {user.isAdmin && <button aria-label="Gerenciar acessos" title="Acessos" onClick={()=>setShowAccess(true)} className="absolute top-4 left-3 text-2xl p-2">👥</button>}
+      {user.isAdmin && showAccess && <AccessPanel onClose={()=>setShowAccess(false)} />}
+      <ZebrolTitle />
+
+      {listError && <p role="alert" className="text-red-300 text-center">{listError}</p>}
+      {opening && <p role="status" className="text-gray-400 text-center">Carregando foto…</p>}
+      {user.isAdmin && conversionMode && <div className="max-w-md mx-auto space-y-2">
+        <button onClick={convertExistingPhotos} disabled={converting} className="bg-blue-600 p-2 rounded disabled:opacity-50">{converting ? 'Convertendo…' : 'Converter fotos antigas'}</button>
+        <p role="status">{conversionStatus}</p>
+      </div>}
+
+      {searchOpen && (
+        <input
+          className="w-full max-w-md mx-auto block bg-gray-900 p-3 rounded"
+          ref={searchInput}
+          placeholder="Pesquisar qualquer informação"
+          value={search}
+          onChange={e=>setSearch(e.target.value)}
+        />
+      )}
+
+      <section aria-labelledby="alerta-geral-heading" className="desktop-catalog mx-auto space-y-4">
+        <div className="relative w-full"><h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2><ServiceInformation key={user.uid} user={user} /><Notifications key={user.uid+'~notifications'} user={user} items={items} onOpen={openDetails} onOpenGeneral={()=>setShowGeneral(true)} /></div>
+        {!items.some(item => item.alertaGeral === true) && <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>}
+      <div className="desktop-catalog-grid grid gap-2 mx-auto">
+        <GeneralVehiclesPreview user={user} search={search} onOpen={()=>setShowGeneral(true)} />
+        {filtered.filter(item => item.alertaGeral === true).map(item=>(
+          <div
+            key={item.id}
+            onClick={()=>openDetails(item)}
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative" style={item._pending ? { paddingBottom: 20 } : undefined}
+          >
+            <LazyThumbnail uid={user.uid} item={item} />
+            <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
+            {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); showPending(item); }}>!</button>}
+          </div>
+        ))}
+      </div>
+      </section>
+
+      <section aria-labelledby="todos-heading" className="desktop-catalog mx-auto space-y-4">
+        <h2 id="todos-heading" className="text-xl font-bold text-center">TODOS <span className="text-sm font-normal">{items.filter(item => item.alertaGeral !== true).length}</span></h2>
+      <div className="desktop-catalog-grid grid gap-2 mx-auto">
+        {filtered.filter(item => item.alertaGeral !== true).map(item=>(
+          <div
+            key={item.id}
+            onClick={()=>openDetails(item)}
+            className="bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative" style={item._pending ? { paddingBottom: 20 } : undefined}
+          >
+            <LazyThumbnail uid={user.uid} item={item} />
+            <p className="text-center font-semibold text-xs leading-tight break-words">{item.name}</p>
+            {item.type === "vehicle" && item.alert && <p className="text-center text-xs text-red-400 leading-tight break-words whitespace-pre-wrap">{item.alert}</p>}
+            <p className="text-center text-xs text-gray-400 leading-tight break-words">{item.type === "vehicle" ? "🏍️ " + (item.ownerName || "Veículo") : item.vulgo}</p>
+            {item._pending && <button type="button" aria-label="Envio pendente" title={item._pendingError || 'Envio pendente'} style={{ position: 'absolute', right: 4, bottom: 0, color: '#ef4444', fontWeight: 900, fontSize: 20, lineHeight: '20px', border: 0, background: 'transparent', padding: '0 4px' }} onClick={e => { e.stopPropagation(); showPending(item); }}>!</button>}
+          </div>
+        ))}
+      </div>
+      </section>
+
+      {selected && (
+        <div className="mobile-overlay detail-overlay bg-black bg-opacity-70">
+          <div role="dialog" aria-modal="true" aria-label="Detalhes do cadastro" ref={detailPanel} className="mobile-panel detail-panel bg-gray-900 rounded">
+          <div ref={detailClose} className="detail-close"><button onClick={() => { openSequence.current++; setOpening(false); setSelected(null); }} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
+          <div className="mobile-scroll detail-content">
+            <div className="detail-photo-wrap">
+            
+
+            {selected.image && (
+              <img src={selected.image} alt="Foto do cadastro" className="mobile-photo rounded mb-3" />
+            )}
+
+            </div>
+            <div ref={detailText} className="detail-text space-y-1">
+            {selected.type === 'vehicle' ? <>
+              <p><b>Modelo:</b> {selected.model || selected.name}</p>
+              <p className="whitespace-pre-wrap"><b>Alerta:</b> {selected.alert || 'Não informado'}</p>
+              <p><b>Proprietário:</b> {personItems.some(p => p.id === selected.ownerId) ? (
+                <button type="button" className="text-blue-400 underline break-words text-left" style={{ minHeight: 'auto', padding: 0 }} onClick={() => {
+                  const owner = personItems.find(p => p.id === selected.ownerId);
+                  if (owner) openDetails(owner);
+                }}>{personItems.find(p => p.id === selected.ownerId).name}</button>
+              ) : (selected.ownerName || 'Não informado')}</p>
+            </> : <>
+            <p><b>Nome:</b> {selected.name}</p>
+            <p><b>Vulgo:</b> {selected.vulgo}</p>
+            <p><b>Facção:</b> {selected.faction}</p>
+            <p><b>CPF:</b> {selected.cpf}</p>
+            <p><b>Nasc:</b> {selected.birth}</p>
+            <p><b>Mãe:</b> {selected.mother}</p>
+            <p><b>Infopem:</b> {selected.infopem}</p>
+            <p><b>Endereço:</b> {ZebrolLocation.mapsUrl(selected) ? <a href={ZebrolLocation.mapsUrl(selected)} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline break-words">{selected.address || '📍 Localização'}</a> : selected.address}</p>
+            </>}
+            <p className="whitespace-pre-wrap"><b>Descrição:</b> {selected.description}</p>
+            {selected.type !== 'vehicle' && items.some(v => v.type === 'vehicle' && v.ownerId === selected.id) && <div className="pt-3 space-y-2">
+              <p className="font-semibold">Veículos</p>
+              {items.filter(v => v.type === 'vehicle' && v.ownerId === selected.id).map(v => <button key={v.id} onClick={() => openDetails(v)} className="block w-full text-left bg-gray-800 p-2 rounded break-words">🏍️ {v.model || v.name}{v.alertaGeral === true ? ' · Alerta ativo' : ''}</button>)}
+            </div>}
+            </div>
+          </div>
+          <div ref={detailActions} className="mobile-actions">
+
+            <button
+              onClick={() => {
+                if (!navigator.onLine || selected._pending) { window.alert('A edição precisa de conexão e de um cadastro sincronizado.'); return; }
+                if (selected._previewOnly) { window.alert('Abra novamente o cadastro com conexão para carregar a foto antes de editar.'); return; }
+                setForm(Object.fromEntries(Object.keys(emptyForm).map(key => [key, selected[key] ?? ''])));
+                setFormType(selected.type === 'vehicle' ? 'vehicle' : 'person');
+                setVehicleForm({ model: selected.model || '', ownerName: selected.ownerName || '', ownerId: selected.ownerId || '', alert: selected.alert || '' });
+                setOwnerSearching(false);
+                setFormError('');
+                editingSnapshot.current=ZebrolRecordGuard.identitySnapshot(selected);
+                setEditingId(selected.id);
+                setShowForm(true);
+                setSelected(null);
+              }}
+              aria-label="Editar cadastro" className="px-3 text-blue-400 text-2xl"
+            >
+              ✏️
+            </button>
+
+            <button
+              onClick={toggleGeneralAlert}
+              disabled={alertSaving}
+              aria-label={selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
+              aria-pressed={selected.alertaGeral === true}
+              title={alertSaving ? 'Atualizando alerta…' : selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
+              className="px-3 text-2xl disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ color: selected.alertaGeral === true ? '#ef4444' : '#9ca3af' }}
+            >
+              <AlertBolt style={{display:'block',width:24,height:34}} />
+            </button>
+
+            {user.isAdmin && <button
+              onClick={() => {
+                setConfirmDeleteId(selected.id); // ← AJUSTADO
+                setConfirmDelete(true);
+              }}
+              aria-label="Excluir cadastro" className="px-3 text-red-400 text-2xl"
+            >
+              🗑️
+            </button>}
+
+          </div>
+          </div>
+        </div>
+      )}
+
+      {duplicate && <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:110}}>
+        <div role="alertdialog" aria-modal="true" aria-labelledby="duplicate-title" className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full space-y-4 text-center">
+          <h2 id="duplicate-title" className="font-bold">POSSÍVEL CADASTRO DUPLICADO</h2>
+          <p>Esta pessoa já pode estar cadastrada.</p>
+          <button disabled={!duplicate.existing} title={duplicate.existing ? undefined : 'Conecte à internet para consultar o cadastro existente.'} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50" onClick={()=>{const existing=duplicate.existing;if(!existing)return;setDuplicate(null);setShowForm(false);openDetails(existing);}}>VER CADASTRO EXISTENTE</button>
+          <button className="w-full bg-gray-700 p-2 rounded" onClick={cancelDuplicate}>CANCELAR</button>
+        </div>
+      </div>}
+      {user.isAdmin && confirmDelete && (
+        <div className="mobile-overlay bg-black bg-opacity-80" style={{ zIndex: 80 }}>
+          <div className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full max-h-full overflow-y-auto space-y-4 text-center">
+            <p className="text-lg font-semibold">
+              Tem certeza que deseja excluir?
+            </p>
+            <div className="flex gap-4">
+              <button
+                onClick={deleteItem}
+                className="flex-1 bg-red-600 p-2 rounded-xl"
+              >
+                Sim
+              </button>
+              <button
+                onClick={() => {
+                  setConfirmDelete(false);
+                  setConfirmDeleteId(null);
+                }}
+                className="flex-1 bg-gray-700 p-2 rounded-xl"
+              >
+                Não
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!selected && !showForm && (
+        <>
+          <button
+  onClick={toggleSearch}
+  className="fixed bottom-6 left-6 text-2xl z-50">
+  🔍
+</button>
+         <button
+  onClick={()=>{
+    setForm(emptyForm);
+    setFormType('person');
+    setVehicleForm({ model: '', ownerName: '', ownerId: '', alert: '' });
+    setOwnerSearching(false);
+    setFormError('');
+    setEditingId(null);
+    setShowForm(true);
+  }}
+  className="fixed bottom-6 right-6 text-4xl font-bold text-blue-500 z-40 cursor-pointer"
+>
+  +
+</button>
+
+
+        </>
+      )}
+
+      {ocrOpen && showForm && formType==='person' && <DocumentReader source={ocrSource} onClose={closeDocument} onResult={receiveDocument}/> }
+      {showForm && (
+        <div className="mobile-overlay bg-black bg-opacity-70">
+          <div role="dialog" aria-modal="true" aria-label="Formulário do cadastro" className="mobile-panel mobile-form bg-gray-900 rounded max-w-sm">
+            <div className="mobile-header"><h2 className="font-semibold">{formType === 'vehicle' ? (editingId ? 'Editar veículo' : 'Cadastrar veículo') : (editingId ? 'Editar pessoa' : 'Cadastrar pessoa')}</h2>
+              {!editingId && <button type="button" disabled={busy || !!crop} onClick={switchFormType} className="text-2xl px-2 disabled:opacity-50" aria-label={formType === 'vehicle' ? 'Cadastrar pessoa' : 'Cadastrar veículo'} title={formType === 'vehicle' ? 'Cadastrar pessoa' : 'Cadastrar veículo'}>{formType === 'vehicle' ? '👤' : '🏍️'}</button>}
+            </div>
+            <div className="mobile-scroll p-4 space-y-2">
+            <fieldset disabled={busy} className="space-y-2 disabled:opacity-70">
+            <input ref={mainPhotoInput} hidden type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={handleChange} aria-label="Foto do cadastro" />
+            <button type="button" aria-label="Adicionar foto do cadastro" title="Adicionar foto do cadastro" onClick={()=>mainPhotoInput.current?.click()} className="px-3 text-xl" style={{height:44}}>📷</button>
+            {crop && (
+              <div className="space-y-3 py-2">
+                <p className="text-sm">Ajuste o enquadramento da foto:</p>
+                <canvas ref={cropCanvas} width="750" height="1000" aria-label="Prévia do recorte da foto" className="block w-full max-w-[225px] mx-auto rounded" style={{ aspectRatio: '3 / 4' }} />
+                <label className="block text-sm">Zoom
+                  <input aria-label="Zoom da foto" className="block w-full" type="range" min="1" max="4" step="0.01" value={cropZoom} onChange={e => setCropZoom(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição horizontal
+                  <input aria-label="Posição horizontal da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropX} onChange={e => setCropX(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição vertical
+                  <input aria-label="Posição vertical da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropY} onChange={e => setCropY(Number(e.target.value))} />
+                </label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={applyCrop} className="flex-1 bg-blue-600 p-2 rounded">Usar este recorte</button>
+                  <button type="button" onClick={cancelCrop} className="flex-1 bg-gray-700 p-2 rounded">Cancelar ajuste</button>
+                </div>
+              </div>
+            )}
+            {!crop && form.image && <img src={form.image} alt="Prévia da foto do cadastro" className="max-h-40 mx-auto rounded object-contain" />}
+            {processingImage && <p role="status">Reduzindo a foto…</p>}
+            {formError && <p role="alert" className="text-red-300 text-sm break-words">{formError}</p>}
+            {saving && <p role="status" className="text-blue-200 text-sm">{saveStatus}</p>}
+
+            {formType === 'vehicle' ? <>
+              <label className="block text-sm">Modelo
+                <input className="w-full bg-gray-800 p-2 rounded" maxLength={120} value={vehicleForm.model} onChange={e => setVehicleForm(v => ({ ...v, model: e.target.value }))} placeholder="Modelo do veículo" />
+              </label>
+              <label className="block text-sm">Alerta
+                <input className="w-full bg-gray-800 p-2 rounded" maxLength={500} value={vehicleForm.alert} onChange={e => setVehicleForm(v => ({ ...v, alert: e.target.value }))} placeholder="Digite o alerta do veículo" />
+              </label>
+              <label className="block text-sm">Proprietário
+                <input className="w-full bg-gray-800 p-2 rounded" autoComplete="off" maxLength={120} value={vehicleForm.ownerName} onChange={e => { setVehicleForm(v => ({ ...v, ownerName: e.target.value, ownerId: '' })); setOwnerSearching(true); }} placeholder="Digite o nome e selecione a pessoa" />
+              </label>
+              {ownerSearching && vehicleForm.ownerName.trim() && <div className="max-h-40 overflow-y-auto bg-gray-800 rounded">
+                {ownerSuggestions.map(p => <button type="button" key={p.id} className="block w-full text-left p-2 border-b border-gray-700" onClick={() => { setVehicleForm(v => ({ ...v, ownerName: p.name, ownerId: p.id })); setOwnerSearching(false); }}>
+                  <span>{p.name}</span><span className="block text-xs text-gray-400">{[p.vulgo, p.birth, p.mother].filter(Boolean).join(' · ') || 'Sem informações complementares'}</span>
+                </button>)}
+                {!ownerSuggestions.length && <p className="p-2 text-sm text-gray-400">Nenhuma pessoa encontrada.</p>}
+              </div>}
+              <p className="text-xs text-gray-400">{vehicleForm.ownerId ? 'Proprietário vinculado ao cadastro selecionado.' : 'Sem seleção, o nome será salvo sem vínculo.'}</p>
+            </> : <>
+            <input className="w-full bg-gray-800 p-2 rounded" name="name" placeholder="Nome" value={form.name} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="vulgo" placeholder="Vulgo" value={form.vulgo} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="faction" placeholder="Facção" value={form.faction} onChange={handleChange} />
+            <div className="relative">
+              <input className="w-full bg-gray-800 p-2 rounded" style={{paddingRight:48}} name="cpf" placeholder="CPF" value={form.cpf} onChange={handleChange} />
+              <button type="button" aria-label="Ler dados de documento" title="Ler documento" onClick={()=>{if(!navigator.onLine){setOcrMessage('Conecte à internet para ler o documento. O cadastro manual continua disponível.');return;}setOcrMessage('');documentInput.current?.click();}} className="absolute right-0 top-0 h-full px-3 text-xl">📷</button>
+            </div>
+            <input ref={documentInput} hidden type="file" accept="image/jpeg,image/png,image/webp" aria-label="Documento para leitura temporária" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;if(!navigator.onLine){setOcrMessage('Conecte à internet para ler o documento.');return;}setOcrSource(file);setOcrOpen(true);}} />
+            {ocrMessage&&<p role="status" className="text-sm text-gray-400">{ocrMessage}</p>}
+
+            <input className="w-full bg-gray-800 p-2 rounded" name="birth" placeholder="Data de nascimento" value={form.birth} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="mother" placeholder="Nome da mãe" value={form.mother} onChange={handleChange} />
+            <input className="w-full bg-gray-800 p-2 rounded" name="infopem" placeholder="Infopem" value={form.infopem} onChange={handleChange} />
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={captureLocation} disabled={locating || busy} aria-label="Usar localização atual" title="Usar localização atual" className="p-2 text-xl disabled:opacity-50">📍</button>
+              <input className="w-full min-w-0 bg-gray-800 p-2 rounded" name="address" placeholder="Endereço" value={form.address} onChange={handleChange} />
+            </div>
+            {locating && <p role="status" className="text-sm text-gray-400">Obtendo localização…</p>}
+            {locationMessage && <p role="status" className="text-sm text-gray-400">{locationMessage}</p>}
+            </>}
+            <textarea className="w-full bg-gray-800 p-2 rounded" name="description" placeholder="Descrição" value={form.description} onChange={handleChange} />
+
+            <button onClick={saveItem} disabled={busy || !!crop} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50 disabled:cursor-not-allowed">{processingImage ? "Processando foto…" : saving ? "Salvando…" : "Salvar"}</button>
+            <button disabled={busy} onClick={()=>{ setShowForm(false); setEditingId(null); setFormError(''); setCrop(null); cropLock.current = false; }} className="w-full bg-gray-700 p-2 rounded disabled:opacity-50">Cancelar</button>
+            </fieldset>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
