@@ -1,6 +1,9 @@
-const CACHE='zebrol-shell-offline-v26';
-const FILES=["index.html","notifications.js","service-information.js","general-vehicles.js","location.js","record-guard.js","access-control.js","offline-store.js","offline-register.js","manifest.webmanifest","icon-192.png","icon-512.png","vendor/tailwind.js","vendor/react.js","vendor/react-dom.js","vendor/babel.js","vendor/firebase-app.js","vendor/firebase-auth.js","vendor/firebase-firestore.js"];
-const HASHES={"index.html":"2c0a8094e656ea399b56a1bd4b6a86fcbe8657a62b388312e13ce06284598973","notifications.js":"99d5da0caecdfef8857b6ff16360fbbe9cd2f7d5c7f530d046ff783265ecdc02","service-information.js":"466c4e5a0f8d3d1768a11ad75b2ab938bd1f6a6067cfad75aedd3eadf6122047","general-vehicles.js":"a4f260cb57de0ebd60c853f2424dffcaa56158176e95b699dfeb66430ba5c0b4","location.js":"648a9e9cfbde32052a039f0d1742ddb08f11756c68f224d2e09ef33383f3d2cf","record-guard.js":"488b56489f675c5a16884d7d2881f686c73d85459ec27121f6531af585c4efb6","access-control.js":"b25f2754dd87f0f7201f849e496e6154deb4dc6a193b76a12f847552954f6a6c","offline-store.js":"50095810aa71a1cca4e52ce2862116112201089f4f72b39bc6a2d5d521949874","offline-register.js":"da2a6193389c69a16e05e924b81c226ae202ecd67ce498b26a4a588855824945"};
+const SHELL_VERSION=27;
+const CACHE='zebrol-shell-offline-v'+SHELL_VERSION;
+const pageVersions=new Map();
+let cleaning=false;
+const FILES=["index.html","notifications.js","service-information.js","general-vehicles.js","location.js","record-guard.js","access-control.js","offline-store.js","offline-register.js","manifest.webmanifest","icon-192.png","icon-512.png","vendor/tailwind.js","vendor/react.js","vendor/react-dom.js","app-main.js","vendor/firebase-app.js","vendor/firebase-auth.js","vendor/firebase-firestore.js"];
+const HASHES={"index.html":"6ef83c88f192bd779f0a218979fa8fd3b88f74a4092048b44ecfb7d0d2035f23","notifications.js":"ca2caa9b7f8ef049ea28440dfe46d719b7817b81c43d1abbaade8ee1eebb375e","service-information.js":"466c4e5a0f8d3d1768a11ad75b2ab938bd1f6a6067cfad75aedd3eadf6122047","general-vehicles.js":"b980937e8f391d57b8150df4cc14ab9ab1f90b83d1d0abc77d75202dc5dede0f","location.js":"648a9e9cfbde32052a039f0d1742ddb08f11756c68f224d2e09ef33383f3d2cf","record-guard.js":"9332ac6827eb9ceaf16090dd860e0bea26c71b70e96befa3bd4e54cedec9d7ea","access-control.js":"b25f2754dd87f0f7201f849e496e6154deb4dc6a193b76a12f847552954f6a6c","offline-store.js":"0c065b87461fe593ed234bbc4e3a67d6057e8b2159cca648352823cc7cc4a447","offline-register.js":"e8262669be771fbd8fb95959ce87227dabc7273f9638d187f831d7d74dfef7c3","app-main.js":"c7af29f3c73cc31fb67f72829634896e1324b5a30ed1119faf88aab80c4dd851"};
 const urls=FILES.map(file=>new URL(file,self.registration.scope).href);
 self.addEventListener('install',event=>event.waitUntil((async()=>{
   const cache=await caches.open(CACHE);
@@ -25,6 +28,21 @@ async function appClients(){
 }
 self.addEventListener('message',event=>{
   const data=event.data||{};
+  if(data.type==='ZEBROL_PAGE_VERSION'&&event.source?.id){
+    pageVersions.set(event.source.id,data.version);
+    event.waitUntil((async()=>{
+      if(cleaning)return;cleaning=true;
+      try{
+        const clients=await appClients();
+        for(const client of clients)if(!pageVersions.has(client.id))client.postMessage({type:'ZEBROL_REPORT_VERSION'});
+        if(!clients.length||clients.some(c=>pageVersions.get(c.id)!==String(SHELL_VERSION)))return;
+        const keys=(await caches.keys()).filter(k=>/^zebrol-shell-offline-v\d+$/.test(k));
+        const previous=keys.filter(k=>Number(k.split('-v')[1])<SHELL_VERSION).sort((a,b)=>Number(b.split('-v')[1])-Number(a.split('-v')[1]))[0];
+        const latest=await appClients();if(latest.some(c=>pageVersions.get(c.id)!==String(SHELL_VERSION)))return;
+        for(const key of keys)if(key!==CACHE&&key!==previous&&Number(key.split('-v')[1])<SHELL_VERSION)await caches.delete(key);
+      }finally{cleaning=false;}
+    })());return;
+  }
   if(data.type==='ZEBROL_READY'&&preparing&&data.token===preparing.token&&preparing.expected.has(event.source?.id)){
     preparing.replies.set(event.source.id,data.ready===true);
     if(!data.ready||preparing.replies.size===preparing.expected.size)preparing.resolve();

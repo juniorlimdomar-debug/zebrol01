@@ -5,11 +5,12 @@
     if(result.plate.length>20 || result.model.length>120 || result.color.length>60 || result.year.length>20 || result.date.length>30)throw new Error('Confira os campos informados.');
     return result;
   }
-  function create(db,owner,authorize,isAdmin,online) {
+  function create(db,owner,authorize,isAdmin,online,notify) {
     const collection=()=>db.collection('users').doc(owner()).collection('generalVehicles');
     function check(uid){if(!authorize(uid))throw new Error('Acesso não autorizado.');if(!online())throw new Error('Conecte à internet para alterar esta lista.');}
     async function save(uid,id,input,expectedVersion=null) {
       check(uid);const data=values(input),ref=collection().doc(id);
+      const notice=notify?notify(expectedVersion===null?'created':'edited',id,{type:'general',name:data.plate+' · '+data.model}):null;
       await db.runTransaction(async tx=>{
         check(uid);const snap=await tx.get(ref);
         if(expectedVersion===null && snap.exists) {
@@ -19,6 +20,7 @@
         if(expectedVersion!==null && (!snap.exists || snap.data().version!==expectedVersion))throw new Error('Este veículo foi alterado ou removido. Abra a edição novamente.');
         if(expectedVersion===null)tx.set(ref,{...data,version:1,_creationToken:id});
         else tx.update(ref,{...data,version:expectedVersion+1});
+        if(notice)notice(tx);
       });
     }
     async function remove(uid,id,expectedVersion) {
@@ -28,7 +30,7 @@
         check(uid);if(!isAdmin())throw new Error('Acesso não autorizado.');
         const snap=await tx.get(ref);if(!snap.exists)return;
         if(snap.data().version!==expectedVersion)throw new Error('O veículo foi alterado. Confira os dados antes de remover.');
-        tx.delete(ref);
+        tx.delete(ref);if(notify)notify('deleted',id,{type:'general',name:snap.data().plate+' · '+snap.data().model})(tx);
       });
     }
     return {collection,save,remove};

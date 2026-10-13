@@ -104,14 +104,19 @@
     return transact(['thumbs'], 'readwrite', tx => {
       const store = tx.objectStore('thumbs');
       const entry = { key: thumbKey(uid,id,version), ownerKey: keyFor(uid,id), image, bytes: image.length * 2, touched: Date.now() };
-      store.getAll().onsuccess = e => {
-        // Remove obsolete versions first. Never touch the independent outbox.
-        const rows = e.target.result.filter(row => {
-          if(row.ownerKey === entry.ownerKey) { store.delete(row.key); return false; }
-          return true;
-        }).sort((a,b) => a.touched - b.touched);
-        let total = rows.reduce((sum,row) => sum + row.bytes, entry.bytes);
-        for(const row of rows) { if(total <= THUMB_LIMIT) break; store.delete(row.key); total -= row.bytes; }
+      // Stream one thumbnail at a time and retain metadata only.
+      const rows=[];const cursorRequest=store.openCursor();
+      cursorRequest.onsuccess=e=>{
+        const cursor=e.target.result;
+        if(cursor){
+          const row=cursor.value;
+          if(row.ownerKey===entry.ownerKey)cursor.delete();
+          else rows.push({key:row.key,bytes:row.bytes,touched:row.touched});
+          cursor.continue();return;
+        }
+        rows.sort((a,b)=>a.touched-b.touched);
+        let total=rows.reduce((sum,row)=>sum+row.bytes,entry.bytes);
+        for(const row of rows){if(total<=THUMB_LIMIT)break;store.delete(row.key);total-=row.bytes;}
         store.put(entry);
       };
     });

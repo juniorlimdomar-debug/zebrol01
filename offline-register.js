@@ -1,5 +1,6 @@
 (function () {
   if (!('serviceWorker' in navigator) || !window.isSecureContext || location.protocol === 'file:') return;
+  const reportVersion=()=>navigator.serviceWorker.controller?.postMessage({type:'ZEBROL_PAGE_VERSION',version:document.querySelector('meta[name="zebrol-shell-version"]')?.content||'unknown'});
   let registration, checking=false, probing=false, lease=null, releaseTimer, reloaded=false;
   let hadController=!!navigator.serviceWorker.controller;
   const stopInput=event=>{if(window.ZebrolUpdateFrozen){event.preventDefault();event.stopImmediatePropagation();}};
@@ -19,6 +20,7 @@
   }
   navigator.serviceWorker.addEventListener('message',async event=>{
     const data=event.data||{};
+    if(data.type==='ZEBROL_REPORT_VERSION'){reportVersion();return;}
     if(data.type==='ZEBROL_PREPARE'){
       if(event.source!==registration?.waiting||Date.now()>=data.deadline)return;
       if(lease)return;
@@ -32,13 +34,13 @@
     if(data.type==='ZEBROL_ABORT'&&lease===data.token)release();
   });
   navigator.serviceWorker.addEventListener('controllerchange',async()=>{
-    if(!hadController){hadController=true;release();return;}
+    if(!hadController){hadController=true;release();reportVersion();return;}
     if(reloaded)return;
     if(lease&&await safe()){reloaded=true;location.reload();return;}
-    release();
+    release();reportVersion();
   });
   window.addEventListener('online',check);
-  window.addEventListener('pageshow',check);
+  window.addEventListener('pageshow',()=>{check();reportVersion();});
   window.addEventListener('focus',check);
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')check();});
   window.addEventListener('zebrol-update-state',activate);
@@ -51,7 +53,7 @@
         const worker=registration.installing;
         worker?.addEventListener('statechange',()=>{if(worker.state==='installed')activate();});
       });
-      await check();
+      await check();reportVersion();
     }catch(_){}
   });
 })();
