@@ -1,3 +1,21 @@
+function PhotoCropControls({cropCanvas,cropZoom,setCropZoom,cropX,setCropX,cropY,setCropY,applyCrop,cancelCrop}){return (<div className="space-y-3 py-2">
+                <p className="text-sm">Ajuste o enquadramento da foto:</p>
+                <canvas ref={cropCanvas} width="750" height="1000" aria-label="Prévia do recorte da foto" className="block w-full max-w-[225px] mx-auto rounded" style={{ aspectRatio: '3 / 4' }} />
+                <label className="block text-sm">Zoom
+                  <input aria-label="Zoom da foto" className="block w-full" type="range" min="1" max="4" step="0.01" value={cropZoom} onChange={e => setCropZoom(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição horizontal
+                  <input aria-label="Posição horizontal da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropX} onChange={e => setCropX(Number(e.target.value))} />
+                </label>
+                <label className="block text-sm">Posição vertical
+                  <input aria-label="Posição vertical da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropY} onChange={e => setCropY(Number(e.target.value))} />
+                </label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={applyCrop} className="flex-1 bg-blue-600 p-2 rounded">Usar este recorte</button>
+                  <button type="button" onClick={cancelCrop} className="flex-1 bg-gray-700 p-2 rounded">Cancelar ajuste</button>
+                </div>
+              </div>);}
+
 
 const { useState, useEffect, useRef, useMemo } = React;
 
@@ -153,6 +171,7 @@ const LazyThumbnail = React.memo(function LazyThumbnail({ uid, item }) {
 
 
 const offline = window.ZebrolOffline;
+const secondPhotos=ZebrolSecondPhoto.create(db,dataOwner,offline,maySync,notifications.event);
 let offlineSyncRunning = false;
 const offlineChanges = new EventTarget();
 const offlineChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('zebrol-pending-v1') : null;
@@ -192,6 +211,7 @@ async function syncPending(uid) {
         if (!navigator.onLine || ['unavailable','unauthenticated','permission-denied'].includes(error.code)) break;
       }
     }
+    if(navigator.onLine && maySync(uid) && !window.ZebrolUpdateFrozen){if(await secondPhotos.sync(uid))announceOfflineChange();}
   } catch (error) {
     console.error('Falha ao acessar cadastros pendentes:', error);
   } finally { offlineSyncRunning = false; }
@@ -886,6 +906,7 @@ function App() {
   const [crop, setCrop] = useState(null);
   const cropLock = useRef(false);
   const cropCanvas = useRef(null);
+  const secondTarget = useRef(null);
   const detailPanel = useRef(null);
   const detailText = useRef(null);
   const detailClose = useRef(null);
@@ -946,6 +967,7 @@ function App() {
   const cancelCrop = () => {
     if (imageLock.current) return;
     setCrop(null);
+    secondTarget.current=null;
     cropLock.current = false;
     setFormError('');
   };
@@ -959,7 +981,12 @@ function App() {
       const blob = await new Promise(resolve => cropCanvas.current.toBlob(resolve, 'image/jpeg', 0.9));
       if (!blob) throw new Error('Não foi possível preparar a foto. Tente outra imagem.');
       const image = await compressPhoto(blob);
-      setForm(f => ({ ...f, image }));
+      if(secondTarget.current){
+        await secondPhotos.enqueue(user.uid,secondTarget.current,image);
+        announceOfflineChange();
+        if(navigator.onLine)syncPending(user.uid);
+        secondTarget.current=null;
+      }else setForm(f => ({ ...f, image }));
       setCrop(null);
       cropLock.current = false;
     } catch (error) {
@@ -1049,7 +1076,7 @@ function App() {
     };
   }, [user]);
 
-  const handleChange = async e => {
+  const handleChange = async (e, secondId=null) => {
     const { name, value, files } = e.target;
     if (savingLock.current) return;
     if (name !== 'image') {
@@ -1060,6 +1087,7 @@ function App() {
     const file = files && files[0];
     if (!file || imageLock.current) return;
     e.target.value = '';
+    secondTarget.current=secondId;
     imageLock.current = true;
     setProcessingImage(true);
     setFormError('');
@@ -1198,6 +1226,7 @@ function App() {
       const batch = db.batch();
       batch.delete(refs.full);
       batch.delete(refs.thumb);
+      batch.delete(secondPhotos.refs(confirmDeleteId).photo);
       batch.delete(refs.item);
       notifications.event('deleted',confirmDeleteId,items.find(item=>item.id===confirmDeleteId)||{})(batch);
       await batch.commit();
@@ -1305,19 +1334,18 @@ function App() {
       </div>
       </section>
 
+      {selected && crop && secondTarget.current && ReactDOM.createPortal(
+        <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:110}}><div role="dialog" aria-modal="true" aria-label="Ajustar segunda foto" className="mobile-panel bg-gray-900 rounded max-w-sm p-4"><div className="mobile-scroll">
+          <fieldset disabled={processingImage}><PhotoCropControls {...{cropCanvas,cropZoom,setCropZoom,cropX,setCropX,cropY,setCropY,applyCrop,cancelCrop}} /></fieldset>
+          {processingImage&&<p role="status">Processando foto…</p>}{formError&&<p role="alert" className="text-red-300">{formError}</p>}
+        </div></div></div>,document.body)}
       {selected && (
         <div className="mobile-overlay detail-overlay bg-black bg-opacity-70">
           <div role="dialog" aria-modal="true" aria-label="Detalhes do cadastro" ref={detailPanel} className="mobile-panel detail-panel bg-gray-900 rounded">
-          <div ref={detailClose} className="detail-close"><button onClick={() => { openSequence.current++; setOpening(false); setSelected(null); }} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
+          <div ref={detailClose} className="detail-close"><button onClick={() => { openSequence.current++; setOpening(false); setSelected(null); }} disabled={processingImage || !!crop} aria-label="Fechar detalhes" className="px-3 text-red-400 text-2xl font-bold">×</button></div>
           <div className="mobile-scroll detail-content">
-            <div className="detail-photo-wrap">
-            
-
-            {selected.image && (
-              <img src={selected.image} alt="Foto do cadastro" className="mobile-photo rounded mb-3" />
-            )}
-
-            </div>
+            {formError&&!crop&&secondTarget.current&&<p role="alert" className="text-red-300 text-sm">{formError}</p>}
+            <DetailPhotos key={user.uid+':'+selected.id} uid={user.uid} item={selected} onChoose={e=>handleChange(e,selected.id)} />
             <div ref={detailText} className="detail-text space-y-1">
             {selected.type === 'vehicle' ? <>
               <p><b>Modelo:</b> {selected.model || selected.name}</p>
@@ -1361,14 +1389,14 @@ function App() {
                 setShowForm(true);
                 setSelected(null);
               }}
-              aria-label="Editar cadastro" className="px-3 text-blue-400 text-2xl"
+              disabled={processingImage || !!crop} aria-label="Editar cadastro" className="px-3 text-blue-400 text-2xl"
             >
               ✏️
             </button>
 
             <button
               onClick={toggleGeneralAlert}
-              disabled={alertSaving}
+              disabled={alertSaving || processingImage || !!crop}
               aria-label={selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
               aria-pressed={selected.alertaGeral === true}
               title={alertSaving ? 'Atualizando alerta…' : selected.alertaGeral === true ? 'Retirar alerta geral' : 'Ativar alerta geral'}
@@ -1383,7 +1411,7 @@ function App() {
                 setConfirmDeleteId(selected.id); // ← AJUSTADO
                 setConfirmDelete(true);
               }}
-              aria-label="Excluir cadastro" className="px-3 text-red-400 text-2xl"
+              disabled={processingImage || !!crop} aria-label="Excluir cadastro" className="px-3 text-red-400 text-2xl"
             >
               🗑️
             </button>}
@@ -1466,23 +1494,7 @@ function App() {
             <input ref={mainPhotoInput} hidden type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={handleChange} aria-label="Foto do cadastro" />
             <button type="button" aria-label="Adicionar foto do cadastro" title="Adicionar foto do cadastro" onClick={()=>mainPhotoInput.current?.click()} className="px-3 text-xl" style={{height:44}}>📷</button>
             {crop && (
-              <div className="space-y-3 py-2">
-                <p className="text-sm">Ajuste o enquadramento da foto:</p>
-                <canvas ref={cropCanvas} width="750" height="1000" aria-label="Prévia do recorte da foto" className="block w-full max-w-[225px] mx-auto rounded" style={{ aspectRatio: '3 / 4' }} />
-                <label className="block text-sm">Zoom
-                  <input aria-label="Zoom da foto" className="block w-full" type="range" min="1" max="4" step="0.01" value={cropZoom} onChange={e => setCropZoom(Number(e.target.value))} />
-                </label>
-                <label className="block text-sm">Posição horizontal
-                  <input aria-label="Posição horizontal da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropX} onChange={e => setCropX(Number(e.target.value))} />
-                </label>
-                <label className="block text-sm">Posição vertical
-                  <input aria-label="Posição vertical da foto" className="block w-full" type="range" min="0" max="100" step="1" value={cropY} onChange={e => setCropY(Number(e.target.value))} />
-                </label>
-                <div className="flex gap-2">
-                  <button type="button" onClick={applyCrop} className="flex-1 bg-blue-600 p-2 rounded">Usar este recorte</button>
-                  <button type="button" onClick={cancelCrop} className="flex-1 bg-gray-700 p-2 rounded">Cancelar ajuste</button>
-                </div>
-              </div>
+              <PhotoCropControls {...{cropCanvas,cropZoom,setCropZoom,cropX,setCropX,cropY,setCropY,applyCrop,cancelCrop}} />
             )}
             {!crop && form.image && <img src={form.image} alt="Prévia da foto do cadastro" className="max-h-40 mx-auto rounded object-contain" />}
             {processingImage && <p role="status">Reduzindo a foto…</p>}
@@ -1541,3 +1553,37 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+
+function DetailPhotos({uid,item,onChoose}){
+  const track=useRef(null),input=useRef(null),sequence=useRef(0);
+  const [page,setPage]=useState(0),[photo,setPhoto]=useState(null),[error,setError]=useState(''),[loading,setLoading]=useState(false);
+  useEffect(()=>{
+    if(page!==1)return;
+    let active=true;
+    const load=async()=>{
+      const token=++sequence.current;setLoading(true);setError('');
+      try{const result=await withPhotoDeadline(secondPhotos.load(uid,item.id));if(active&&token===sequence.current){setPhoto(result);setError(result.error||'');}}
+      catch(e){if(active&&token===sequence.current)setError(saveErrorMessage(e));}
+      finally{if(active&&token===sequence.current)setLoading(false);}
+    };
+    load();offlineChanges.addEventListener('change',load);window.addEventListener('online',load);
+    return()=>{active=false;sequence.current++;offlineChanges.removeEventListener('change',load);window.removeEventListener('online',load);};
+  },[uid,item.id,page]);
+  const go=position=>{track.current?.scrollTo({left:position*track.current.clientWidth,behavior:'smooth'});};
+  return <div className="detail-photo-wrap">
+    <div ref={track} className="detail-photo-track" onScroll={e=>{const el=e.currentTarget;setPage(Math.round(el.scrollLeft/Math.max(1,el.clientWidth)));}}>
+      <div className="detail-photo-slot bg-gray-800">{item.image&&<img src={item.image} alt="Foto principal do cadastro" className="mobile-photo" />}</div>
+      <div className="detail-photo-slot bg-gray-800 flex items-center justify-center">
+        {photo?.image?<img src={photo.image} alt="Segunda foto do cadastro" className="mobile-photo" />:
+          loading?<span className="text-sm" role="status">Carregando foto…</span>:
+          <button type="button" onClick={()=>input.current?.click()} aria-label="Adicionar segunda foto" className="text-4xl p-3">+</button>}
+        {photo?.pending&&<span className="absolute bottom-8 right-2 text-red-400 font-bold" title={error||'Envio pendente'}>!</span>}
+        {error&&<p role="alert" className="absolute top-2 left-2 right-2 text-xs bg-black bg-opacity-80 text-red-300 p-2">{error}</p>}
+        {photo?.unavailable&&!error&&<p className="absolute top-2 left-2 right-2 text-xs text-center">Segunda foto ainda não disponível neste aparelho.</p>}
+      </div>
+    </div>
+    <input ref={input} hidden type="file" name="image" accept="image/jpeg,image/png,image/webp" aria-label="Selecionar segunda foto" onChange={onChoose} />
+    <div className="detail-photo-dots" aria-label="Fotos do cadastro">{[0,1].map(position=><button key={position} type="button" aria-label={position?'Ver segunda foto':'Ver foto principal'} aria-pressed={page===position} onClick={()=>go(position)}><span style={{background:page===position?'#fff':'rgba(0,0,0,.35)',opacity:page===position?1:.6}} /></button>)}</div>
+  </div>;
+}

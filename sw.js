@@ -1,9 +1,9 @@
-const SHELL_VERSION=28;
+const SHELL_VERSION=29;
 const CACHE='zebrol-shell-offline-v'+SHELL_VERSION;
 const pageVersions=new Map();
 let cleaning=false;
-const FILES=["index.html","notifications.js","service-information.js","general-vehicles.js","location.js","record-guard.js","access-control.js","offline-store.js","offline-register.js","manifest.webmanifest","icon-192.png","icon-512.png","vendor/tailwind.js","vendor/react.js","vendor/react-dom.js","app-main.js","vendor/firebase-app.js","vendor/firebase-auth.js","vendor/firebase-firestore.js"];
-const HASHES={"index.html":"1ab2ace37aed5c499fb842ec9512fee4fbf49183d5eb6ec1551e7aa83086b140","notifications.js":"ca2caa9b7f8ef049ea28440dfe46d719b7817b81c43d1abbaade8ee1eebb375e","service-information.js":"466c4e5a0f8d3d1768a11ad75b2ab938bd1f6a6067cfad75aedd3eadf6122047","general-vehicles.js":"b980937e8f391d57b8150df4cc14ab9ab1f90b83d1d0abc77d75202dc5dede0f","location.js":"648a9e9cfbde32052a039f0d1742ddb08f11756c68f224d2e09ef33383f3d2cf","record-guard.js":"9332ac6827eb9ceaf16090dd860e0bea26c71b70e96befa3bd4e54cedec9d7ea","access-control.js":"b25f2754dd87f0f7201f849e496e6154deb4dc6a193b76a12f847552954f6a6c","offline-store.js":"0c065b87461fe593ed234bbc4e3a67d6057e8b2159cca648352823cc7cc4a447","offline-register.js":"e8262669be771fbd8fb95959ce87227dabc7273f9638d187f831d7d74dfef7c3","app-main.js":"3af076d4bc17bb33321175e3775e96aff649f61cb0a1b7b5cfe25f1daaba5537"};
+const FILES=["second-photo.js","index.html","notifications.js","service-information.js","general-vehicles.js","location.js","record-guard.js","access-control.js","offline-store.js","offline-register.js","manifest.webmanifest","icon-192.png","icon-512.png","vendor/tailwind.js","vendor/react.js","vendor/react-dom.js","app-main.js","vendor/firebase-app.js","vendor/firebase-auth.js","vendor/firebase-firestore.js"];
+const HASHES={"second-photo.js":"0e530fb294037d6b6f644c8d829c5f85fef15b2d5eef48916cbc380aab85414f","index.html":"daff65634d32fe1d09429dfb13ba9faf80cf7da69f2983b92dae71b742a72642","notifications.js":"ca2caa9b7f8ef049ea28440dfe46d719b7817b81c43d1abbaade8ee1eebb375e","service-information.js":"466c4e5a0f8d3d1768a11ad75b2ab938bd1f6a6067cfad75aedd3eadf6122047","general-vehicles.js":"b980937e8f391d57b8150df4cc14ab9ab1f90b83d1d0abc77d75202dc5dede0f","location.js":"648a9e9cfbde32052a039f0d1742ddb08f11756c68f224d2e09ef33383f3d2cf","record-guard.js":"cef8e630c3d13f95f0b53e2134998c6c1904915890f4b5f3685df4f6d0493022","access-control.js":"b25f2754dd87f0f7201f849e496e6154deb4dc6a193b76a12f847552954f6a6c","offline-store.js":"4dd2e1588937a54322f68abf8aa9ac0b53a74c84000cc1c80e9d51212423dca3","offline-register.js":"e8262669be771fbd8fb95959ce87227dabc7273f9638d187f831d7d74dfef7c3","app-main.js":"9083e0582866a8d3b9ca7c64230d159662571e0981b516f2976a97055b14e8b0"};
 const urls=FILES.map(file=>new URL(file,self.registration.scope).href);
 self.addEventListener('install',event=>event.waitUntil((async()=>{
   const cache=await caches.open(CACHE);
@@ -81,3 +81,4 @@ self.addEventListener('fetch',event=>{
     return cached||new Response('Abra novamente com internet para preparar esta versão.',{status:503,headers:{'Content-Type':'text/plain; charset=utf-8'}});
   })());
 });
+

@@ -27,18 +27,25 @@
   .mobile-form input[type=file] { max-width: 100%; }
   .detail-panel .mobile-photo { width: var(--detail-photo-width, 100%); max-width: 100%; height: auto; aspect-ratio: 3 / 4; margin-left: auto; margin-right: auto; }
   .detail-overlay { padding: 8px; }
-  .detail-panel { width: calc(var(--detail-photo-width, 384px) + 24px); max-width: min(408px, 100%); }
-  .detail-content { padding: 0 6px 6px; }
+  .detail-panel { position: relative; width: calc(var(--detail-photo-width, 384px) + 24px); max-width: min(408px, 100%); }
+  .detail-content { padding: 12px 6px 6px; }
   .detail-photo-wrap { position: relative; width: var(--detail-photo-width, 100%); max-width: 100%; margin: 0 auto; min-height: 44px; }
   .detail-photo-wrap .mobile-photo { width: 100%; margin: 0; }
   .detail-photo-wrap .detail-close { position: absolute; top: 4px; right: 4px; z-index: 1; padding: 0; }
-  .detail-panel > .detail-close { padding: 0; height: 32px; min-height: 32px; }
-  .detail-panel > .detail-close button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; line-height: 1; }
+  .detail-panel > .detail-close { position: absolute; top: 0; right: 0; left: auto; z-index: 3; padding: 0; width: 32px; height: 32px; min-height: 32px; }
+  .detail-panel > .detail-close button { display: flex; align-items: flex-start; justify-content: flex-end; width: 32px; height: 32px; min-height: 32px; padding: 0 2px 0 0; margin: 0; line-height: 1; }
   .detail-text { margin-top: 8px; padding: 0 6px; }
 .desktop-catalog { max-width: none; width: 100%; }
 .desktop-catalog-grid { max-width: none; width: 100%; grid-template-columns: repeat(auto-fill, minmax(min(calc((100% - 16px) / 3), 140px), 1fr)); }
+.detail-photo-track { display:flex; overflow-x:auto; scroll-snap-type:x mandatory; scrollbar-width:none; border-radius:4px; overscroll-behavior-x:contain; }
+.detail-photo-track::-webkit-scrollbar { display:none; }
+.detail-photo-slot { flex:0 0 100%; width:100%; aspect-ratio:3/4; position:relative; scroll-snap-align:start; scroll-snap-stop:always; overflow:hidden; }
+.detail-photo-slot img { width:100%; height:100%; object-fit:cover; }
+.detail-photo-dots { position:absolute; bottom:8px; left:50%; transform:translateX(-50%); display:flex; gap:4px; z-index:2; }
+.detail-photo-dots button { min-height:24px; width:24px; padding:0; display:flex; align-items:center; justify-content:center; }
+.detail-photo-dots span { display:block; width:7px; height:7px; border:1px solid white; border-radius:50%; box-shadow:0 0 2px black; }
 </style>
-<meta name="zebrol-shell-version" content="28" />
+<meta name="zebrol-shell-version" content="29" />
 <meta name="theme-color" content="#000000" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" href="icon-192.png" />
@@ -63,6 +70,7 @@ firebase.initializeApp({
 <script src="location.js"></script>
 <script src="general-vehicles.js"></script>
 <script src="service-information.js"></script>
+<script src="second-photo.js"></script>
 <script src="app-main.js"></script>
 </body>
 </html>
