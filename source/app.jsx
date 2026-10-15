@@ -197,15 +197,15 @@ async function syncPending(uid) {
     const entries = await offline.getPending(uid);
     for (const entry of entries) {
       if (!navigator.onLine || !maySync(uid)) break;
-      if(entry.duplicateId) continue;
+      if(entry.duplicateId || entry.blocked || (entry.nextAt||0)>Date.now()) continue;
       try {
-        await recordGuard.save({uid,id:entry.id,payload:entry.item,image:entry.image,thumbnail:entry.thumbnail,token:entry.token});
+        await recordGuard.save({uid,id:entry.id,payload:entry.item,image:entry.image,thumbnail:entry.thumbnail,token:entry.token,confirmedNames:entry.confirmedNames||[]});
         // Thumbnail caching is optional and must not prevent acknowledgement.
         await offline.putThumb(uid,entry.id,entry.item.photoVersion,entry.thumbnail).catch(() => {});
         await offline.confirm(entry);
         announceOfflineChange();
       } catch (error) {
-        await offline.setPendingError(uid,entry.id,saveErrorMessage(error),error.duplicate?.id || '');
+        await offline.setPendingError(uid,entry.id,saveErrorMessage(error),error.duplicate?.id || '',error.code||'');
         if(error.code==='duplicate-person') offlineChanges.dispatchEvent(new CustomEvent('duplicate',{detail:{existing:error.duplicate,pendingId:entry.id,uid}}));
         announceOfflineChange();
         if (!navigator.onLine || ['unavailable','unauthenticated','permission-denied'].includes(error.code)) break;
@@ -235,15 +235,24 @@ async function loadThumbnail(uid, item) {
   return thumbnail;
 }
 
+const detailPhotoMemory=new Map();
+function rememberDetailPhoto(key,image){
+  detailPhotoMemory.delete(key);detailPhotoMemory.set(key,{image,at:Date.now()});
+  let size=[...detailPhotoMemory.values()].reduce((n,row)=>n+row.image.length*2,0);
+  for(const [id,row]of detailPhotoMemory){if(size<=2*1024*1024&&detailPhotoMemory.size<=6)break;detailPhotoMemory.delete(id);size-=row.image.length*2;}
+}
 async function loadDetailPhoto(uid,item) {
   const pending = await offline.pendingOne(uid,item.id).catch(() => null);
   if (pending) return { image: pending.image || '', previewOnly: false };
   if (item.image) return { image: item.image, previewOnly: false };
   if (!item.hasPhoto) return { image: '', previewOnly: false };
+  const memoryKey=uid+':'+item.id+':'+item.photoVersion;
+  const remembered=detailPhotoMemory.get(memoryKey);
+  if(remembered&&Date.now()-remembered.at<60000)return {image:remembered.image,previewOnly:false};
   if (navigator.onLine) {
     try {
       const snap = await withPhotoDeadline(photoRefs(uid,item.id).full.get({ source: 'server' }));
-      if (snap.exists && snap.data().image) return { image: snap.data().image, previewOnly: false };
+      if (snap.exists && snap.data().image) {rememberDetailPhoto(memoryKey,snap.data().image);return { image: snap.data().image, previewOnly: false };}
     } catch (_) { /* text and cached thumbnail remain available */ }
   }
   return { image: await offline.getThumb(uid,item.id,item.photoVersion).catch(() => ''), previewOnly: true };
@@ -724,6 +733,8 @@ function DocumentReader({source,onClose,onResult}) {
 function App() {
   const [user, setUser] = useState(null);
   const [accessStatus,setAccessStatus] = useState('checking');
+  useEffect(()=>{detailPhotoMemory.clear();},[user?.uid]);
+  const editingPhoto=useRef(null);
   const [showAccess,setShowAccess] = useState(false);
   const [showGeneral,setShowGeneral] = useState(false);
   const [duplicate,setDuplicate] = useState(null);
@@ -739,14 +750,22 @@ function App() {
         try { const snap=await photoRefs(user.uid,item._duplicateId).item.get({source:'server'}); if(snap.exists)existing={...snap.data(),id:snap.id}; }
         catch(e){window.alert(saveErrorMessage(e));return;}
       }
+      const entry=await offline.pendingOne(user.uid,item.id);
+      existing=existing&&ZebrolRecordGuard.findDuplicate(entry?.item||item,[existing],item.id,entry?.confirmedNames||[])||existing;
       setDuplicate({existing,pendingId:item.id}); return;
     }
-    if(item._pendingError)window.alert(item._pendingError);
+    if(item._pendingError){window.alert(item._pendingError);await offline.retryPending(user.uid,item.id);}
     if(navigator.onLine)syncPending(user.uid);
   };
   const cancelDuplicate = async () => {
-    try { if(duplicate?.pendingId) { await offline.discardPending(user.uid,duplicate.pendingId); announceOfflineChange(); } setDuplicate(null); }
+    try { setDuplicate(null); }
     catch(e){window.alert(saveErrorMessage(e));}
+  };
+  const confirmDifferentPerson=async()=>{
+    const current=duplicate;if(!current?.existing||current.existing._duplicateLevel!=='name')return;
+    setDuplicate(null);
+    if(current.pendingId){await offline.confirmDifferent(user.uid,current.pendingId,current.existing.id);announceOfflineChange();syncPending(user.uid);}
+    else saveItem([...(current.confirmedNames||[]),current.existing.id]);
   };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1035,12 +1054,13 @@ function App() {
     if (!user) return;
     let active = true;
     let generation = 0;
+    let serverRows=null;
     const uid = user.uid;
     const refresh = async () => {
       const ownGeneration = ++generation;
       try {
         const [rows,pending] = await Promise.all([offline.getList(uid),offline.getPending(uid)]);
-        if (active && ownGeneration === generation) setItems(offline.merge(rows,pending));
+        if (active && ownGeneration === generation) setItems(previous=>{const byId=new Map(previous.map(row=>[row.id,row]));const next=offline.merge(rows,pending).map(row=>{const old=byId.get(row.id);return old&&JSON.stringify(old)===JSON.stringify(row)?old:row;});return next.length===previous.length&&next.every((row,i)=>row===previous[i])?previous:next;});
       } catch (_) {
         if (active) setListError('O armazenamento local não está disponível. Não é possível cadastrar offline neste navegador.');
       }
@@ -1056,7 +1076,11 @@ function App() {
     const unsubscribe = db.collection('users').doc(dataOwner(uid)).collection('items')
       .onSnapshot({ includeMetadataChanges: true }, async snap => {
         if (!active || snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
-        const rows = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        const changes=snap.docChanges?snap.docChanges():null;
+        if(serverRows && changes?.length===0)return;
+        if(!serverRows||!changes)serverRows=new Map(snap.docs.map(d=>[d.id,{...d.data(),id:d.id}]));
+        else for(const change of changes){if(change.type==='removed')serverRows.delete(change.doc.id);else serverRows.set(change.doc.id,{...change.doc.data(),id:change.doc.id});}
+        const rows=[...serverRows.values()];
         try {
           await offline.putList(uid,rows);
           if(active) { setListError(''); await refresh(); }
@@ -1119,7 +1143,8 @@ function App() {
     }
   };
 
-  const saveItem = async () => {
+  const saveItem = async (confirmedNames=[]) => {
+    if(!Array.isArray(confirmedNames))confirmedNames=[];
     if (ocrOpen || savingLock.current || imageLock.current || locationLock.current) return;
     if (cropLock.current) { setFormError('Confirme ou cancele o ajuste da foto antes de salvar.'); return; }
     setFormError('');
@@ -1144,12 +1169,9 @@ function App() {
     }, 15000);
     try {
       const ref = db.collection('users').doc(dataOwner(user.uid)).collection('items');
-      const localDuplicate=ZebrolRecordGuard.findDuplicate(payload,navigator.onLine ? items.filter(row=>row._pending) : items,editingId);
-      if(localDuplicate){setDuplicate({existing:localDuplicate});return;}
-      if(navigator.onLine) {
-        const found=await recordGuard.check(payload,editingId);
-        if(found){setDuplicate({existing:found});return;}
-      }
+      const localDuplicate=ZebrolRecordGuard.findDuplicate(payload,items,editingId,confirmedNames);
+      if(localDuplicate){setDuplicate({existing:localDuplicate,confirmedNames});return;}
+
       if (!editingId) {
         const uid = user.uid;
         const id = ref.doc().id;
@@ -1158,7 +1180,7 @@ function App() {
         delete payload.image;
         payload.hasPhoto = !!image;
         payload.photoVersion = image ? crypto.randomUUID() : '';
-        await offline.enqueue(uid,id,payload,image,thumbnail);
+        await offline.enqueue(uid,id,payload,image,thumbnail,confirmedNames);
         // Completion here means the local transaction committed, never just a
         // fire-and-forget write. The card stays pending until server confirmation.
         announceOfflineChange();
@@ -1172,17 +1194,16 @@ function App() {
       }
       const image=payload.image;
       delete payload.image;
-      const thumbnail=image ? await makeThumbnail(image) : '';
-      payload.hasPhoto=!!image;
-      payload.photoVersion=image ? crypto.randomUUID() : '';
-      payload.image=firebase.firestore.FieldValue.delete();
-      await recordGuard.save({uid:user.uid,id:editingId,payload,image,thumbnail,editing:true,expected:editingSnapshot.current});
+      const photoChanged=image!==editingPhoto.current;
+      const thumbnail=photoChanged&&image ? await makeThumbnail(image) : '';
+      if(photoChanged){payload.hasPhoto=!!image;payload.photoVersion=image?crypto.randomUUID():'';payload.image=firebase.firestore.FieldValue.delete();}
+      await recordGuard.save({uid:user.uid,id:editingId,payload,image,thumbnail,editing:true,expected:editingSnapshot.current,photoChanged,confirmedNames});
       setForm(emptyForm);
       setEditingId(null);
       setShowForm(false);
       setSelected(null);
     } catch (error) {
-      if(error.code==='duplicate-person')setDuplicate({existing:error.duplicate});
+      if(error.code==='duplicate-person')setDuplicate({existing:error.duplicate,confirmedNames});
       else setFormError(saveErrorMessage(error));
     } finally {
       clearTimeout(reminder);
@@ -1276,6 +1297,7 @@ function App() {
       {user.isAdmin && <button aria-label="Gerenciar acessos" title="Acessos" onClick={()=>setShowAccess(true)} className="absolute top-4 left-3 text-2xl p-2">👥</button>}
       {user.isAdmin && showAccess && <AccessPanel onClose={()=>setShowAccess(false)} />}
       <ZebrolTitle />
+      <PhotoPendingPanel uid={user.uid} />
 
       {listError && <p role="alert" className="text-red-300 text-center">{listError}</p>}
       {opening && <p role="status" className="text-gray-400 text-center">Carregando foto…</p>}
@@ -1385,6 +1407,7 @@ function App() {
                 setOwnerSearching(false);
                 setFormError('');
                 editingSnapshot.current=ZebrolRecordGuard.identitySnapshot(selected);
+                editingPhoto.current=selected.image||'';
                 setEditingId(selected.id);
                 setShowForm(true);
                 setSelected(null);
@@ -1424,7 +1447,11 @@ function App() {
       {duplicate && <div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:110}}>
         <div role="alertdialog" aria-modal="true" aria-labelledby="duplicate-title" className="bg-gray-900 p-6 rounded-2xl w-80 max-w-full space-y-4 text-center">
           <h2 id="duplicate-title" className="font-bold">POSSÍVEL CADASTRO DUPLICADO</h2>
-          <p>Esta pessoa já pode estar cadastrada.</p>
+          <p>{duplicate.existing?._duplicateReason||'Esta pessoa já pode estar cadastrada.'}</p>
+          {duplicate.existing&&<p className="text-sm">{duplicate.existing.name}<br/>Nascimento: {duplicate.existing.birth||'Não informado'}<br/>Mãe: {duplicate.existing.mother||'Não informado'}</p>}
+          {duplicate.existing?._duplicateLevel==='name'&&<button className="w-full bg-blue-600 p-2 rounded" onClick={()=>confirmDifferentPerson().catch(e=>window.alert(saveErrorMessage(e)))}>CONFERI: É OUTRA PESSOA</button>}
+          {duplicate.pendingId&&<button className="w-full bg-gray-700 p-2 rounded" onClick={async()=>{try{await offline.retryPending(user.uid,duplicate.pendingId);setDuplicate(null);announceOfflineChange();syncPending(user.uid);}catch(e){window.alert(saveErrorMessage(e));}}}>VERIFICAR NOVAMENTE</button>}
+          {duplicate.pendingId&&<button className="w-full text-red-300 p-2" onClick={async()=>{if(!window.confirm('Descartar somente este cadastro pendente? O cadastro já salvo será preservado.'))return;try{await offline.discardPending(user.uid,duplicate.pendingId);announceOfflineChange();setDuplicate(null);}catch(e){window.alert(saveErrorMessage(e));}}}>DESCARTAR PENDENTE</button>}
           <button disabled={!duplicate.existing} title={duplicate.existing ? undefined : 'Conecte à internet para consultar o cadastro existente.'} className="w-full bg-blue-600 p-2 rounded disabled:opacity-50" onClick={()=>{const existing=duplicate.existing;if(!existing)return;setDuplicate(null);setShowForm(false);openDetails(existing);}}>VER CADASTRO EXISTENTE</button>
           <button className="w-full bg-gray-700 p-2 rounded" onClick={cancelDuplicate}>CANCELAR</button>
         </div>
@@ -1587,3 +1614,28 @@ function DetailPhotos({uid,item,onChoose}){
     <div className="detail-photo-dots" aria-label="Fotos do cadastro">{[0,1].map(position=><button key={position} type="button" aria-label={position?'Ver segunda foto':'Ver foto principal'} aria-pressed={page===position} onClick={()=>go(position)}><span style={{background:page===position?'#fff':'rgba(0,0,0,.35)',opacity:page===position?1:.6}} /></button>)}</div>
   </div>;
 }
+function PhotoPendingPanel({uid}){
+  const [open,setOpen]=useState(false),[rows,setRows]=useState([]),[count,setCount]=useState(0),[error,setError]=useState(''),[server,setServer]=useState(null),[busy,setBusy]=useState(false);
+  useEffect(()=>{
+    let active=true,sequence=0;
+    const refresh=async()=>{const token=++sequence;try{const entries=await secondPhotos.pending(uid);if(active&&token===sequence){setCount(entries.length);setRows(open?entries:[]);}}catch(e){if(active)setError(saveErrorMessage(e));}};
+    refresh();offlineChanges.addEventListener('change',refresh);return()=>{active=false;offlineChanges.removeEventListener('change',refresh);};
+  },[uid,open]);
+  const action=async work=>{if(busy||offlineSyncRunning){setError('Aguarde o envio em andamento terminar.');return;}setBusy(true);setError('');try{await work();announceOfflineChange();}catch(e){setError(saveErrorMessage(e));}finally{setBusy(false);}};
+  return <>
+    <div className="text-center text-xs text-gray-500"><span>v{document.querySelector('meta[name="zebrol-shell-version"]')?.content||'31'}</span>{count>0&&<button type="button" className="ml-3 text-red-300" onClick={()=>{setServer(null);setOpen(true);}}>Fotos pendentes ({count})</button>}</div>
+    {open&&ReactDOM.createPortal(<div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:115}}><div role="dialog" aria-modal="true" aria-label="Fotos pendentes" className="mobile-panel bg-gray-900 rounded max-w-sm"><div className="mobile-header"><h2>FOTOS PENDENTES</h2><button disabled={busy} aria-label="Fechar fotos pendentes" onClick={()=>{setOpen(false);setServer(null);}}>×</button></div><div className="mobile-scroll p-3 space-y-3">
+      {error&&<p role="alert" className="text-red-300 text-sm">{error}</p>}
+      {!rows.length&&<p>Nenhuma foto pendente.</p>}
+      {rows.map(row=><div key={row.token} className="border-b border-gray-800 pb-3 space-y-2">
+        <img src={row.image} alt="Foto pendente preservada" className="max-h-40 mx-auto object-contain" />
+        <p className="text-sm">{row.error||'Aguardando envio.'}</p>
+        <a className="block text-blue-400" download="zebrol-foto-pendente.jpg" href={row.image}>Salvar uma cópia da foto</a>
+        <button disabled={busy} className="text-blue-400 block" onClick={()=>action(async()=>{if(!navigator.onLine)throw Error('Conecte à internet para conferir a foto salva.');const image=await withPhotoDeadline(secondPhotos.serverImage(row.id));setServer({id:row.id,image});})}>Ver foto já salva</button>
+        {server?.id===row.id&&(server.image?<img src={server.image} alt="Segunda foto já salva no cadastro" className="max-h-40 mx-auto object-contain" />:<p className="text-sm">Não há segunda foto salva neste cadastro.</p>)}
+        <div className="flex gap-3"><button disabled={busy} className="text-blue-400" onClick={()=>action(async()=>{await secondPhotos.retry(uid,row.id);syncPending(uid);})}>Tentar novamente</button><button disabled={busy} className="text-red-300" onClick={()=>action(async()=>{if(window.confirm('Remover esta foto da fila deste aparelho? Salve uma cópia antes se quiser preservá-la. A foto já salva no cadastro não será alterada.'))await secondPhotos.discard(uid,row.id,row.token);})}>Remover da fila</button></div>
+      </div>)}
+    </div></div></div>,document.body)}
+  </>;
+}
+

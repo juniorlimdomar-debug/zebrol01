@@ -5,13 +5,20 @@
     const text=normalize(value), br=text.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);
     return br ? `${br[3]}-${br[2].padStart(2,'0')}-${br[1].padStart(2,'0')}` : text;
   }
-  function findDuplicate(candidate,rows,ignoreId) {
-    if(candidate.type === 'vehicle') return null;
-    const key=cpf(candidate.cpf);
-    const tuple=[normalize(candidate.name),birth(candidate.birth),normalize(candidate.mother)];
-    if(!key && tuple.some(v=>!v)) return null;
-    return rows.find(row=>row.id!==ignoreId && row.type!=='vehicle' &&
-      (key ? cpf(row.cpf)===key : normalize(row.name)===tuple[0] && birth(row.birth)===tuple[1] && normalize(row.mother)===tuple[2])) || null;
+  function findDuplicate(candidate,rows,ignoreId,confirmedNames=[]) {
+    if(candidate.type==='vehicle')return null;
+    const key=cpf(candidate.cpf),name=normalize(candidate.name),dob=birth(candidate.birth),mother=normalize(candidate.mother);
+    let warning=null;
+    for(const row of rows){
+      if(row.id===ignoreId||row.type==='vehicle')continue;
+      const otherCpf=cpf(row.cpf);
+      if(key&&otherCpf){if(key===otherCpf)return {...row,_duplicateLevel:'strong',_duplicateReason:'CPF igual'};continue;}
+      if(!name||normalize(row.name)!==name)continue;
+      if(dob&&birth(row.birth)===dob)return {...row,_duplicateLevel:'strong',_duplicateReason:'Nome e nascimento iguais'};
+      if(mother&&normalize(row.mother)===mother)return {...row,_duplicateLevel:'strong',_duplicateReason:'Nome e nome da mãe iguais'};
+      if(!confirmedNames.includes(row.id)&&!warning)warning={...row,_duplicateLevel:'name',_duplicateReason:'Mesmo nome; confira se são pessoas diferentes'};
+    }
+    return warning;
   }
   function duplicateError(item) {
     return Object.assign(new Error('POSSÍVEL CADASTRO DUPLICADO\nEsta pessoa já pode estar cadastrada.'),{code:'duplicate-person',duplicate:item});
@@ -25,23 +32,23 @@
     const revision = snap => snap.exists ? snap.data().revision : 0;
     const identityRow=(row,id)=>({id,type:row.type,name:row.name,cpf:row.cpf,birth:row.birth,mother:row.mother});
     let scan=null;
-    async function check(candidate,ignoreId,baseline=null) {
+    async function check(candidate,ignoreId,baseline=null,confirmedNames=[]) {
       if(candidate.type==='vehicle')return null;
       const rev=baseline===null?revision(await control().get({source:'server'})):baseline;
       if(!scan||scan.revision!==rev){
         const snap=await collection().get({source:'server'});
         scan={revision:rev,rows:snap.docs.map(d=>identityRow(d.data(),d.id))};
       }
-      let duplicate=findDuplicate(candidate,scan.rows,ignoreId);
+      let duplicate=findDuplicate(candidate,scan.rows,ignoreId,confirmedNames);
       if(duplicate){
         // Deletion does not advance the identity revision; verify cached matches.
         const current=await collection().doc(duplicate.id).get({source:'server'});
-        if(!current.exists){scan=null;return check(candidate,ignoreId,rev);}
-        duplicate=findDuplicate(candidate,[{...current.data(),id:duplicate.id}],ignoreId);
+        if(!current.exists){scan=null;return check(candidate,ignoreId,rev,confirmedNames);}
+        duplicate=findDuplicate(candidate,[{...current.data(),id:duplicate.id}],ignoreId,confirmedNames);
       }
       return duplicate;
     }
-    async function save({uid,id,payload,image,thumbnail,token,editing=false,expected=null}) {
+    async function save({uid,id,payload,image,thumbnail,token,editing=false,expected=null,confirmedNames=[],photoChanged=true}) {
       const item=collection().doc(id), full=item.collection('photos').doc('full'), thumb=item.collection('photos').doc('thumb');
       const person=payload.type!=='vehicle';
       const writeNotification=notify ? notify(editing?'edited':'created',id,payload) : null;
@@ -50,7 +57,7 @@
         // Read the revision BEFORE the collection. The transaction validates
         // that no other identity-changing write has committed since this scan.
         const baseline=person ? revision(await control().get({source:'server'})) : 0;
-        const duplicate=person ? await check(payload,id,baseline) : null;
+        const duplicate=person ? await check(payload,id,baseline,confirmedNames) : null;
         try {
           let committed=false;
           const result=await db.runTransaction(async tx=>{
@@ -76,7 +83,7 @@
             if(person) data._dedupRevision=baseline+1;
             if(!editing)data._creationToken=token;
             if(editing)tx.update(item,data);else tx.set(item,data);
-            if(image) {
+            if(image && photoChanged) {
               tx.set(full,{image,version:payload.photoVersion});
               tx.set(thumb,{image:thumbnail,version:payload.photoVersion});
             }

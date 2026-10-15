@@ -59,17 +59,21 @@
       tx.objectStore('pending').get(keyFor(uid,id)).onsuccess = e => done(e.target.result || null);
     });
   }
-  async function enqueue(uid, id, item, image, thumbnail) {
-    const entry = { key: keyFor(uid,id), uid, id, item: clean(item), image, thumbnail, created: Date.now(), token: crypto.randomUUID(), error: '' };
+  async function enqueue(uid, id, item, image, thumbnail, confirmedNames = []) {
+    const entry = { key: keyFor(uid,id), uid, id, item: clean(item), image, thumbnail, confirmedNames, created: Date.now(), token: crypto.randomUUID(), error: '' };
     await transact(['pending'], 'readwrite', tx => tx.objectStore('pending').add(entry));
     return entry;
   }
-  function setPendingError(uid, id, message, duplicateId = '') {
+  function confirmDifferent(uid,id,existingId) {
+    return transact(['pending'],'readwrite',tx=>{const store=tx.objectStore('pending');store.get(keyFor(uid,id)).onsuccess=e=>{const row=e.target.result;if(row)store.put({...row,confirmedNames:[...new Set([...(row.confirmedNames||[]),existingId])],duplicateId:'',error:'',nextAt:0,blocked:false,attempts:0,duplicateId:''});};});
+  }
+  function setPendingError(uid, id, message, duplicateId = '', code = '') {
     return transact(['pending'], 'readwrite', tx => {
       const store = tx.objectStore('pending');
-      store.get(keyFor(uid,id)).onsuccess = e => { if(e.target.result) store.put({ ...e.target.result, error: message, duplicateId }); };
+      store.get(keyFor(uid,id)).onsuccess = e => { if(e.target.result) store.put({ ...e.target.result, error: message, duplicateId, attempts:(e.target.result.attempts||0)+1, nextAt:Date.now()+Math.min(900000,30000*Math.pow(2,Math.min((e.target.result.attempts||0)+1,5))), blocked:['permission-denied','unauthenticated'].includes(code) }); };
     });
   }
+  function retryPending(uid,id){return transact(['pending'],'readwrite',tx=>{const store=tx.objectStore('pending');store.get(keyFor(uid,id)).onsuccess=e=>{if(e.target.result)store.put({...e.target.result,nextAt:0,blocked:false,attempts:0});};});}
   // The outbox is removed only after a successful server commit; promote text
   // into the local list in the same local transaction for restart safety.
   function discardPending(uid,id) { return transact(['pending'],'readwrite',tx=>tx.objectStore('pending').delete(keyFor(uid,id))); }
@@ -105,21 +109,22 @@
       const store = tx.objectStore('thumbs');
       const entry = { key: thumbKey(uid,id,version), ownerKey: keyFor(uid,id), image, bytes: image.length * 2, touched: Date.now() };
       // Stream one thumbnail at a time and retain metadata only.
+      const second=String(id).endsWith('~second-photo');const limit=second?8*1024*1024:THUMB_LIMIT;
       const rows=[];const cursorRequest=store.openCursor();
       cursorRequest.onsuccess=e=>{
         const cursor=e.target.result;
         if(cursor){
           const row=cursor.value;
           if(row.ownerKey===entry.ownerKey)cursor.delete();
-          else rows.push({key:row.key,bytes:row.bytes,touched:row.touched});
+          else if(String(row.ownerKey).endsWith('~second-photo')===second)rows.push({key:row.key,bytes:row.bytes,touched:row.touched});
           cursor.continue();return;
         }
         rows.sort((a,b)=>a.touched-b.touched);
         let total=rows.reduce((sum,row)=>sum+row.bytes,entry.bytes);
-        for(const row of rows){if(total<=THUMB_LIMIT)break;store.delete(row.key);total-=row.bytes;}
+        for(const row of rows){if(total<=limit)break;store.delete(row.key);total-=row.bytes;}
         store.put(entry);
       };
     });
   }
-  root.ZebrolOffline = { open, discardPending, getList, putList, getPending, pendingOne, enqueue, confirm, setPendingError, merge, getThumb, putThumb, clean, THUMB_LIMIT };
+  root.ZebrolOffline = { open, retryPending, confirmDifferent, discardPending, getList, putList, getPending, pendingOne, enqueue, confirm, setPendingError, merge, getThumb, putThumb, clean, THUMB_LIMIT };
 })(typeof window !== 'undefined' ? window : globalThis);

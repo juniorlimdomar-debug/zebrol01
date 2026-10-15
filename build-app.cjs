@@ -1,6 +1,7 @@
 // Maintenance only: node build-app.cjs 28 (requires existing vendor/babel.js).
 const fs=require('fs'),path=require('path'),crypto=require('crypto');const root=__dirname;
 const read=file=>fs.readFileSync(path.join(root,file),'utf8');const write=(file,text)=>fs.writeFileSync(path.join(root,file),text);
+require('child_process').execFileSync(process.execPath,[path.join(root,'build-styles.cjs')],{stdio:'inherit'});
 let sw=read('sw.js');const previous=Number(sw.match(/const SHELL_VERSION=(\d+);/)[1]);const version=process.argv[2]?Number(process.argv[2]):previous;if(!Number.isInteger(version)||version<previous)throw Error('Use uma versão igual ou maior que a atual.');
 const code=require(path.join(root,'vendor/babel.js')).transform(read('source/app.jsx'),{presets:['react'],comments:false,compact:true}).code;write('app-main.js',code+'\n');
 write('index.html',read('index.html').replace(/(<meta name="zebrol-shell-version" content=")\d+(" \/>)/,'$1'+version+'$2'));
