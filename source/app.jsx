@@ -23,7 +23,10 @@ const { useState, useEffect, useRef, useMemo } = React;
 
 const auth = firebase.auth();
 const db = firebase.firestore();
-const notifications=ZebrolNotifications.create(db,dataOwner,()=>firebase.firestore.FieldValue.serverTimestamp());
+const notifications=ZebrolNotifications.create(db,dataOwner,()=>firebase.firestore.FieldValue.serverTimestamp(),()=>{
+  if(!currentAccess||currentAccess.authUid!==auth.currentUser?.uid)return '';
+  return currentAccess.isAdmin?'Administrador':String(currentAccess.name||('Acesso '+currentAccess.authUid.slice(-8))).trim().slice(0,60);
+});
 const recordGuard = ZebrolRecordGuard.create(db,dataOwner,maySync,notifications.event);
 const generalVehicles=ZebrolGeneralVehicles.create(db,dataOwner,maySync,()=>auth.currentUser?.uid===ZEBROL_ADMIN_UID,()=>navigator.onLine,notifications.event);
 
@@ -171,7 +174,7 @@ const LazyThumbnail = React.memo(function LazyThumbnail({ uid, item }) {
 
 
 const offline = window.ZebrolOffline;
-const secondPhotos=ZebrolSecondPhoto.create(db,dataOwner,offline,maySync,notifications.event);
+const secondPhotos=ZebrolSecondPhoto.create(db,dataOwner,offline,maySync,notifications.event,notifications.actor);
 let offlineSyncRunning = false;
 const offlineChanges = new EventTarget();
 const offlineChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('zebrol-pending-v1') : null;
@@ -199,7 +202,7 @@ async function syncPending(uid) {
       if (!navigator.onLine || !maySync(uid)) break;
       if(entry.duplicateId || entry.blocked || (entry.nextAt||0)>Date.now()) continue;
       try {
-        await recordGuard.save({uid,id:entry.id,payload:entry.item,image:entry.image,thumbnail:entry.thumbnail,token:entry.token,confirmedNames:entry.confirmedNames||[]});
+        await recordGuard.save({uid,id:entry.id,payload:entry.item,image:entry.image,thumbnail:entry.thumbnail,token:entry.token,confirmedNames:entry.confirmedNames||[],actorName:entry.actorName===undefined?'':entry.actorName});
         // Thumbnail caching is optional and must not prevent acknowledgement.
         await offline.putThumb(uid,entry.id,entry.item.photoVersion,entry.thumbnail).catch(() => {});
         await offline.confirm(entry);
@@ -661,7 +664,6 @@ function Notifications({user,items,onOpen,onOpenGeneral}) {
   },[user.uid,user.authUid]);
   useEffect(()=>{if(!open)return;const previous=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=previous;};},[open]);
   const visible=rows.filter(row=>millis(row.createdAt)>cleared);
-  const labels={created:'Cadastro adicionado',edited:'Cadastro editado',alertOn:'Adicionado ao alerta geral',alertOff:'Retirado do alerta geral',deleted:'Cadastro excluído'};
   const clear=async()=>{
     if(lock.current)return;
     if(!navigator.onLine){setError('Conecte à internet para limpar a lista.');return;}
@@ -676,7 +678,7 @@ function Notifications({user,items,onOpen,onOpenGeneral}) {
       <div className="mobile-scroll p-3 space-y-3">
         {error&&<p role="alert" className="text-red-300 text-sm">{error}</p>}
         {!visible.length&&<p className="text-gray-400 text-sm">Nenhuma notificação.</p>}
-        {visible.map(row=><div key={row.id} className="py-2 text-xs sm:text-sm" style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>{row.kind==='service'?({created:'Informação do serviço adicionada',edited:'Informação do serviço editada',deleted:'Informação do serviço excluída'}[row.action]||'Informação do serviço atualizada'):(labels[row.action]||'Cadastro atualizado')}: {row.action==='deleted'?<span>{row.name}</span>:<button onClick={()=>select(row)} className="text-blue-400 text-left">{row.name}</button>}</div>)}
+        {visible.map(row=><div key={row.id} className="py-2 text-xs sm:text-sm" style={{borderBottom:'1px solid rgba(156,163,175,0.10)',overflowWrap:'anywhere'}}>{notifications.label(row)}: {row.action==='deleted'?<span>{row.name}</span>:<button onClick={()=>select(row)} className="text-blue-400 text-left">{row.name}</button>}</div>)}
         <div className="flex justify-center border-t border-gray-800 pt-2"><button disabled={busy||!visible.length} onClick={()=>setConfirm(true)} aria-label="Limpar minhas notificações" className="px-3 text-red-400 text-2xl disabled:opacity-50">🗑️</button></div>
       </div>
         {confirm&&<div role="alertdialog" aria-label="Confirmar limpeza das notificações" style={{flexShrink:0,maxHeight:"50%",overflowY:"auto"}} className="bg-gray-800 p-3 rounded space-y-3"><p>Limpar suas notificações? Os cadastros serão preservados.</p><div className="flex gap-2"><button disabled={busy} onClick={()=>setConfirm(false)} className="flex-1 bg-gray-700 p-2 rounded">CANCELAR</button><button disabled={busy} onClick={clear} className="flex-1 bg-red-600 p-2 rounded">LIMPAR</button></div></div>}
@@ -1149,6 +1151,7 @@ function App() {
     if (cropLock.current) { setFormError('Confirme ou cancele o ajuste da foto antes de salvar.'); return; }
     setFormError('');
     if (!user) { setFormError('Entre novamente para salvar.'); return; }
+    const actorName=notifications.actor();
     if (editingId && !navigator.onLine) { setFormError('Edições precisam de conexão.'); return; }
     if (formType === 'vehicle' && !vehicleForm.model.trim()) { setFormError('Informe o modelo do veículo.'); return; }
     if (formType === 'vehicle' && vehicleForm.ownerId && !personItems.some(p => p.id === vehicleForm.ownerId)) { setFormError('O proprietário selecionado não está mais cadastrado. Selecione novamente.'); return; }
@@ -1180,7 +1183,7 @@ function App() {
         delete payload.image;
         payload.hasPhoto = !!image;
         payload.photoVersion = image ? crypto.randomUUID() : '';
-        await offline.enqueue(uid,id,payload,image,thumbnail,confirmedNames);
+        await offline.enqueue(uid,id,payload,image,thumbnail,confirmedNames,actorName);
         // Completion here means the local transaction committed, never just a
         // fire-and-forget write. The card stays pending until server confirmation.
         announceOfflineChange();
@@ -1197,7 +1200,7 @@ function App() {
       const photoChanged=image!==editingPhoto.current;
       const thumbnail=photoChanged&&image ? await makeThumbnail(image) : '';
       if(photoChanged){payload.hasPhoto=!!image;payload.photoVersion=image?crypto.randomUUID():'';payload.image=firebase.firestore.FieldValue.delete();}
-      await recordGuard.save({uid:user.uid,id:editingId,payload,image,thumbnail,editing:true,expected:editingSnapshot.current,photoChanged,confirmedNames});
+      await recordGuard.save({uid:user.uid,id:editingId,payload,image,thumbnail,editing:true,expected:editingSnapshot.current,photoChanged,confirmedNames,actorName});
       setForm(emptyForm);
       setEditingId(null);
       setShowForm(false);
@@ -1623,7 +1626,7 @@ function PhotoPendingPanel({uid}){
   },[uid,open]);
   const action=async work=>{if(busy||offlineSyncRunning){setError('Aguarde o envio em andamento terminar.');return;}setBusy(true);setError('');try{await work();announceOfflineChange();}catch(e){setError(saveErrorMessage(e));}finally{setBusy(false);}};
   return <>
-    <div className="text-center text-xs text-gray-500"><span>v{document.querySelector('meta[name="zebrol-shell-version"]')?.content||'31'}</span>{count>0&&<button type="button" className="ml-3 text-red-300" onClick={()=>{setServer(null);setOpen(true);}}>Fotos pendentes ({count})</button>}</div>
+    {count>0&&<div className="text-center text-xs text-gray-500"><button type="button" className="text-red-300" onClick={()=>{setServer(null);setOpen(true);}}>Fotos pendentes ({count})</button></div>}
     {open&&ReactDOM.createPortal(<div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:115}}><div role="dialog" aria-modal="true" aria-label="Fotos pendentes" className="mobile-panel bg-gray-900 rounded max-w-sm"><div className="mobile-header"><h2>FOTOS PENDENTES</h2><button disabled={busy} aria-label="Fechar fotos pendentes" onClick={()=>{setOpen(false);setServer(null);}}>×</button></div><div className="mobile-scroll p-3 space-y-3">
       {error&&<p role="alert" className="text-red-300 text-sm">{error}</p>}
       {!rows.length&&<p>Nenhuma foto pendente.</p>}

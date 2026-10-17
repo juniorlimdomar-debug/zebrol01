@@ -1,6 +1,6 @@
 (function(root){
   'use strict';
-  function create(db,owner,offline,allowed,notify){
+  function create(db,owner,offline,allowed,notify,actor=()=>''){
     const queueKey=uid=>uid+'~second-photo-outbox';
     const cacheId=id=>id+'~second-photo';
     const refs=id=>{const item=db.collection('users').doc(owner()).collection('items').doc(id);return {item,photo:item.collection('photos').doc('second')};};
@@ -15,7 +15,7 @@
     const pending=uid=>offline.getList(queueKey(uid));
     async function enqueue(uid,id,image){
       if(!allowed(uid))throw new Error('Acesso não autorizado.');
-      const entry={id,image,token:crypto.randomUUID(),error:''};
+      const entry={id,image,token:crypto.randomUUID(),error:'',actorName:actor()};
       await transaction(uid,rows=>{if(rows.some(row=>row.id===id))throw new Error('Esta segunda foto já está aguardando envio.');rows.push(entry);});
       return entry;
     }
@@ -33,7 +33,7 @@
             if(photo.exists){if(photo.data().token===entry.token)return;throw Object.assign(new Error('Outro aparelho já adicionou a segunda foto. Sua imagem pendente foi preservada.'),{code:'photo-conflict'});}
             if(!allowed(uid))throw new Error('Acesso não autorizado.');
             tx.set(r.photo,{image:entry.image,token:entry.token});
-            notify?.('edited',entry.id,parent.data())(tx);
+            notify?.('edited',entry.id,parent.data(),entry.actorName||'')(tx);
           });
           await offline.putThumb(uid,cacheId(entry.id),'second',entry.image).catch(()=>{});
           await transaction(uid,rows=>{const index=rows.findIndex(row=>row.id===entry.id&&row.token===entry.token);if(index>=0)rows.splice(index,1);});

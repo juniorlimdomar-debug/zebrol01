@@ -59,8 +59,8 @@
       tx.objectStore('pending').get(keyFor(uid,id)).onsuccess = e => done(e.target.result || null);
     });
   }
-  async function enqueue(uid, id, item, image, thumbnail, confirmedNames = []) {
-    const entry = { key: keyFor(uid,id), uid, id, item: clean(item), image, thumbnail, confirmedNames, created: Date.now(), token: crypto.randomUUID(), error: '' };
+  async function enqueue(uid, id, item, image, thumbnail, confirmedNames = [], actorName = '') {
+    const entry = { key: keyFor(uid,id), uid, id, item: clean(item), image, thumbnail, confirmedNames, actorName, created: Date.now(), token: crypto.randomUUID(), error: '' };
     await transact(['pending'], 'readwrite', tx => tx.objectStore('pending').add(entry));
     return entry;
   }

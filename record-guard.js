@@ -48,10 +48,10 @@
       }
       return duplicate;
     }
-    async function save({uid,id,payload,image,thumbnail,token,editing=false,expected=null,confirmedNames=[],photoChanged=true}) {
+    async function save({uid,id,payload,image,thumbnail,token,editing=false,expected=null,confirmedNames=[],photoChanged=true,actorName}) {
       const item=collection().doc(id), full=item.collection('photos').doc('full'), thumb=item.collection('photos').doc('thumb');
       const person=payload.type!=='vehicle';
-      const writeNotification=notify ? notify(editing?'edited':'created',id,payload) : null;
+      const writeNotification=notify ? notify(editing?'edited':'created',id,payload,actorName) : null;
       for(let attempt=0;attempt<8;attempt++) {
         if(!authorize(uid))throw new Error('Acesso não autorizado.');
         // Read the revision BEFORE the collection. The transaction validates
