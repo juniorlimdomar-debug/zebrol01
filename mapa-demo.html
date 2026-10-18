@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>Zebrol — teste isolado do mapa</title>
+  <link rel="stylesheet" href="app-styles.css">
+  <style>
+    body{background:#000;color:#fff;margin:0;padding:16px;font-family:ui-sans-serif,system-ui,sans-serif}
+    .demo-title{text-align:center;font-size:30px;font-weight:800;margin:8px 0 28px}
+    .demo-heading{position:relative;text-align:center;margin:28px 0;font-size:20px;font-weight:700}
+    .demo-heading button{position:absolute;top:50%;transform:translate(-50%,-50%);font-size:24px;min-height:44px;width:32px}
+    #open-map{left:calc((100% - 16px) / 6 - 40px)}
+    #service{left:calc((100% - 16px) / 6)}
+    .demo-note{max-width:420px;margin:24px auto;color:#9ca3af;text-align:center;font-size:14px;line-height:1.5}
+    #cancel{display:block;margin:16px auto;color:#f87171;min-height:44px}
+    #cancel[hidden]{display:none}
+  </style>
+  <script src="location.js"></script>
+</head>
+<body>
+  <h1 class="demo-title">ZEBROL</h1>
+  <div class="demo-heading">ALERTA GERAL
+    <button id="open-map" type="button" aria-label="Abrir mapa demonstrativo">🗺️</button>
+    <button id="service" type="button" aria-label="Informações do serviço indisponíveis nesta página de teste" disabled>🚨</button>
+  </div>
+  <p class="demo-note">Teste isolado da função mapa.<br>Toque em 🗺️. Somente exemplos fictícios; esta página não acessa o Firebase.</p>
+  <p class="demo-note" id="status" role="status"></p>
+  <button id="cancel" type="button" hidden>Cancelar abertura</button>
+  <script>
+    let loading,operation;
+    const launch=document.getElementById('open-map'),status=document.getElementById('status'),cancel=document.getElementById('cancel');
+    function module(){
+      if(window.ZebrolMapPhase1)return Promise.resolve(window.ZebrolMapPhase1);
+      if(!loading)loading=new Promise((resolve,reject)=>{
+        const script=document.createElement('script'),timer=setTimeout(fail,15000);
+        function fail(){clearTimeout(timer);script.remove();loading=null;reject(new Error('Não foi possível carregar o mapa. Tente novamente.'));}
+        script.src='zebrol-map.js?v=map-demo-1';script.onerror=fail;script.onload=()=>{clearTimeout(timer);window.ZebrolMapPhase1?resolve(window.ZebrolMapPhase1):fail();};document.head.appendChild(script);
+      });return loading;
+    }
+    cancel.onclick=()=>{operation?.abort();operation=null;cancel.hidden=true;status.textContent='';};
+    launch.onclick=async()=>{
+      if(operation)return;const controller=new AbortController();operation=controller;status.textContent='Carregando mapa…';cancel.hidden=false;
+      try{const map=await module();if(controller.signal.aborted)return;await map.open({launcher:launch,point:ZebrolLocation.point,signal:controller.signal,onClose:()=>{operation=null;}});status.textContent='';}
+      catch(e){if(!controller.signal.aborted){status.textContent=e.message;operation=null;}}
+      finally{if(!controller.signal.aborted)cancel.hidden=true;}
+    };
+  </script>
+</body>
+</html>

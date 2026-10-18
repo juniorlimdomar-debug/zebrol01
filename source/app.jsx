@@ -584,6 +584,35 @@ function ServiceInformation({user}) {
     {open&&ReactDOM.createPortal(<ServicePanel user={user} rows={rows} loadError={error} onClose={()=>setOpen(false)}/>,document.body)}</>;
 }
 
+
+let mapDemoModule;
+function loadMapDemo(){
+  if(window.ZebrolMapPhase1)return Promise.resolve(window.ZebrolMapPhase1);
+  if(!mapDemoModule)mapDemoModule=new Promise((resolve,reject)=>{
+    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-1';
+    const timer=setTimeout(()=>fail(),15000);
+    function fail(){clearTimeout(timer);script.remove();mapDemoModule=null;reject(new Error('Não foi possível carregar o mapa. Confira a conexão e tente novamente.'));}
+    script.onerror=fail;script.onload=()=>{clearTimeout(timer);if(window.ZebrolMapPhase1)resolve(window.ZebrolMapPhase1);else fail();};document.head.appendChild(script);
+  });
+  return mapDemoModule;
+}
+function MapDemoButton(){
+  const [loading,setLoading]=useState(false),[error,setError]=useState('');
+  const button=useRef(null),operation=useRef(null);
+  useEffect(()=>()=>{operation.current?.abort();},[]);
+  const cancel=()=>{operation.current?.abort();operation.current=null;setLoading(false);setError('');};
+  const open=async()=>{
+    if(operation.current)return;
+    const controller=new AbortController();operation.current=controller;setLoading(true);setError('');
+    try{const module=await loadMapDemo();if(controller.signal.aborted)return;await module.open({launcher:button.current,point:ZebrolLocation.point,signal:controller.signal,onClose:()=>{if(operation.current===controller)operation.current=null;}});}
+    catch(e){if(!controller.signal.aborted){setError(e.message);operation.current=null;}}
+    finally{if(!controller.signal.aborted)setLoading(false);}
+  };
+  return <><button ref={button} type="button" aria-label="Abrir mapa demonstrativo" onClick={open} style={{position:'absolute',left:'calc((100% - 16px) / 6 - 40px)',top:'50%',transform:'translate(-50%, -50%)',width:32,minHeight:44,padding:0}} className="text-2xl">🗺️</button>
+    {(loading||error)&&ReactDOM.createPortal(<div className="mobile-overlay bg-black bg-opacity-80" style={{zIndex:110}}><div role="dialog" aria-modal="true" aria-label="Carregar mapa" className="mobile-panel bg-gray-900 rounded max-w-sm p-4 gap-3"><p role={error?'alert':'status'}>{error||'Carregando mapa demonstrativo…'}</p><button type="button" onClick={cancel} className="text-red-400">FECHAR</button></div></div>,document.body)}
+  </>;
+}
+
 function ServicePanel({user,rows,loadError,onClose}) {
   const [draft,setDraft]=useState(null);
   const [removing,setRemoving]=useState(null);
@@ -1320,7 +1349,7 @@ function App() {
       )}
 
       <section aria-labelledby="alerta-geral-heading" className="desktop-catalog mx-auto space-y-4">
-        <div className="relative w-full"><h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2><ServiceInformation key={user.uid} user={user} /><Notifications key={user.uid+'~notifications'} user={user} items={items} onOpen={openDetails} onOpenGeneral={()=>setShowGeneral(true)} /></div>
+        <div className="relative w-full"><h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2><ServiceInformation key={user.uid} user={user} /><MapDemoButton key={user.authUid+'~map-demo'} /><Notifications key={user.uid+'~notifications'} user={user} items={items} onOpen={openDetails} onOpenGeneral={()=>setShowGeneral(true)} /></div>
         {!items.some(item => item.alertaGeral === true) && <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>}
       <div className="desktop-catalog-grid grid gap-2 mx-auto">
         <GeneralVehiclesPreview user={user} search={search} onOpen={()=>setShowGeneral(true)} />
