@@ -2,7 +2,7 @@
   'use strict';
   // Google Maps preview: fixtures only, no Firestore, no geocoder, no real records.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-google-1';
+  const REV='map-visual-1';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -86,7 +86,7 @@
     const ll=p=>({lat:p.latitude,lng:p.longitude});
     if(!retainedMap){
       const surface=document.createElement('div');surface.style.cssText='width:100%;height:100%';host.append(surface);
-      retainedMap={surface,map:new G.Map(surface,{center:{lat:CENTER[0],lng:CENTER[1]},zoom:15,minZoom:3,maxZoom:20,mapId:'DEMO_MAP_ID',disableDefaultUI:true,zoomControl:true,zoomControlOptions:{position:G.ControlPosition.RIGHT_TOP},gestureHandling:'greedy',clickableIcons:false})};
+      retainedMap={surface,map:new G.Map(surface,{center:{lat:CENTER[0],lng:CENTER[1]},zoom:15,minZoom:3,maxZoom:20,mapId:'DEMO_MAP_ID',disableDefaultUI:true,zoomControl:false,gestureHandling:'greedy',clickableIcons:false})};
     }else host.append(retainedMap.surface);
     const {map,surface}=retainedMap,markers=[],listeners=[];let dot,accuracy;
     map.setCenter({lat:CENTER[0],lng:CENTER[1]});map.setZoom(15);
@@ -96,6 +96,8 @@
         const marker=new G.marker.AdvancedMarkerElement({map,position:ll(p),content,title:'Endereço demonstrativo · '+count+' cadastro(s)'});listeners.push(marker.addListener('click',click));markers.push(marker);return marker;},
       position(p,follow){const center=ll(p);if(!dot){accuracy=new G.Circle({map,center,radius:p.accuracy,strokeColor:'#60a5fa',strokeWeight:1,fillColor:'#60a5fa',fillOpacity:0.12,clickable:false});const content=document.createElement('div');content.style.cssText='width:16px;height:16px;border:2px solid white;border-radius:50%;background:#2563eb;box-sizing:border-box;transform:translateY(50%)';dot=new G.marker.AdvancedMarkerElement({map,position:center,content,title:'Sua localização',zIndex:1000});}else{dot.position=center;accuracy.setCenter(center);accuracy.setRadius(p.accuracy);}if(follow)map.panTo(center);},
       clearPosition(){if(dot){dot.map=null;accuracy.setMap(null);dot=accuracy=null;}},
+      zoom(delta){map.setZoom(Math.max(3,Math.min(20,(map.getZoom()||15)+delta)));},
+      center(p){map.panTo(ll(p));map.setZoom(17);},
       home(){map.setCenter({lat:CENTER[0],lng:CENTER[1]});map.setZoom(15);},
       resize(){G.event.trigger(map,'resize');},
       destroy(){this.clearPosition();for(const listener of listeners)listener.remove();for(const marker of markers)marker.map=null;surface.remove();map.setCenter({lat:CENTER[0],lng:CENTER[1]});}
@@ -109,15 +111,15 @@
     if(signal?.aborted)throw new DOMException('Abertura cancelada.','AbortError');
     if(activeSession){activeSession.focus();return activeSession;}
     const overlay=element('section','zmap-overlay');overlay.setAttribute('role','dialog');overlay.setAttribute('aria-modal','true');overlay.setAttribute('aria-label','Mapa demonstrativo');
-    const header=element('header','zmap-header'),title=element('h2','','MAPA · DEMONSTRAÇÃO');
-    const caption=element('p','zmap-caption','Cadastros fictícios · mapa real · não indica presença de pessoas');
+    const controls=element('div','zmap-controls');
+    const caption=element('p','zmap-caption','Endereços fictícios · demonstração');
     const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('p','zmap-status','Toque em 🥷 para testar os cards. GPS somente se você ativar.');status.setAttribute('role','status');
     const shade=element('div','zmap-shade');shade.hidden=true;stage.append(canvas,shade);
     let disposed=false,following=true,lastPoint=null,selected=null,index=0,detail=false,tracker,map,observer;
     const oldOverflow=document.body.style.overflow;
     function closeCard(){shade.hidden=true;shade.replaceChildren();detail=false;selected=null;}
     function close(){if(disposed)return;disposed=true;tracker?.dispose();observer?.disconnect();document.removeEventListener('visibilitychange',visibility);root.removeEventListener('pagehide',pagehide);root.removeEventListener('pageshow',pageshow);document.removeEventListener('keydown',keys,true);signal?.removeEventListener('abort',close);root.removeEventListener('zebrol-map-auth-error',authError);map?.destroy();overlay.remove();document.body.style.overflow=oldOverflow;activeSession=null;lastPoint=null;launcher?.focus({preventScroll:true});onClose?.();root.dispatchEvent(new Event('zebrol-update-state'));}
-    const exit=button('×','Fechar mapa',close,'zmap-close');header.append(title,exit);
+    const exit=button('×','Fechar mapa',close,'zmap-close');controls.append(exit,button('+','Aproximar mapa',()=>map.zoom(1)),button('−','Afastar mapa',()=>map.zoom(-1)));
     function drawCard(){
       shade.replaceChildren();shade.hidden=false;detail=false;const row=selected.rows[index],area=element('div','zmap-card-area');
       const size=document.querySelector('.desktop-catalog-grid > .bg-gray-900')?.getBoundingClientRect().width||140;
@@ -136,14 +138,27 @@
     }
     shade.onclick=e=>{if(e.target===shade)closeCard();};
     function follow(){following=true;gps.setAttribute('aria-pressed','true');if(lastPoint)map.position(lastPoint,true);tracker.enable();}
-    const gps=button('◎ Ativar / seguir GPS','Ativar ou recentralizar GPS',follow);gps.setAttribute('aria-pressed','false');
-    tools.append(gps,button('🥷 Exemplos','Voltar aos marcadores demonstrativos',()=>{following=false;gps.setAttribute('aria-pressed','false');map.home();}));
-    overlay.append(header,caption,stage,tools,status);document.body.append(overlay);document.body.style.overflow='hidden';
+    const gps=button('📍','Ativar ou recentralizar GPS',follow);gps.setAttribute('aria-pressed','false');
+    tools.append(gps,button('🥷','Voltar aos marcadores demonstrativos',()=>{following=false;gps.setAttribute('aria-pressed','false');map.home();}));
+    const search=element('form','zmap-search');search.hidden=true;
+    const input=element('input');input.type='search';input.placeholder='Endereço fictício';input.setAttribute('aria-label','Pesquisar endereço fictício');input.maxLength=160;
+    const hint=element('p','','Somente exemplos: Rua de Demonstração A, B ou Avenida de Demonstração C.');
+    const result=element('p');result.setAttribute('role','status');
+    const submit=button('Buscar','Buscar endereço fictício',()=>{});submit.type='submit';
+    const searchToggle=button('🔍','Pesquisar endereços fictícios',()=>{search.hidden=!search.hidden;searchToggle.setAttribute('aria-expanded',String(!search.hidden));if(!search.hidden)input.focus();},'zmap-search-toggle');searchToggle.setAttribute('aria-expanded','false');
+    search.append(input,submit,button('×','Fechar pesquisa',()=>{search.hidden=true;searchToggle.setAttribute('aria-expanded','false');searchToggle.focus();}),hint,result);
+    const normalize=value=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+    search.onsubmit=event=>{event.preventDefault();const query=normalize(input.value);if(!query){result.textContent='Digite um endereço fictício.';return;}
+      const groups=group(fixtures(),point).filter(g=>query.split(' ').every(word=>normalize(g.rows[0].address).split(' ').includes(word)));
+      if(groups.length!==1){result.textContent=groups.length?'Informe A, B ou C para escolher um dos exemplos.':'Nenhum endereço fictício encontrado. Esta prévia não consulta endereços reais.';return;}
+      following=false;gps.setAttribute('aria-pressed','false');map.center(groups[0].point);result.textContent='Endereço fictício localizado.';
+    };
+    overlay.append(stage,caption,controls,searchToggle,search,tools,status);document.body.append(overlay);document.body.style.overflow='hidden';
     function authError(){tracker?.dispose();map?.clearPosition();status.textContent=googleFailure||authMessage;}
     function visibility(){tracker.visibility();if(document.visibilityState!=='visible'){lastPoint=null;map.clearPosition();status.textContent='GPS pausado enquanto o aplicativo está em segundo plano.';}else map.resize();}
     function pagehide(){tracker.dispose();lastPoint=null;map.clearPosition();}
     function pageshow(event){if(event.persisted)close();}
-    function keys(e){if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(detail)drawCard();else if(!shade.hidden)closeCard();else close();}if(e.key==='Tab'){const scope=shade.hidden?overlay:shade;const list=[...scope.querySelectorAll('button,a,[tabindex="0"]')].filter(el=>!el.disabled);if(!list.length)return;const first=list[0],last=list.at(-1);if(e.shiftKey&&(document.activeElement===first||!scope.contains(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&(document.activeElement===last||!scope.contains(document.activeElement))){e.preventDefault();first.focus();}}}
+    function keys(e){if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(detail)drawCard();else if(!shade.hidden)closeCard();else if(!search.hidden){search.hidden=true;searchToggle.setAttribute('aria-expanded','false');searchToggle.focus();}else close();}if(e.key==='Tab'){const scope=shade.hidden?overlay:shade;const list=[...scope.querySelectorAll('button,input,a,[tabindex="0"]')].filter(el=>!el.disabled&&!el.closest('[hidden]'));if(!list.length)return;const first=list[0],last=list.at(-1);if(e.shiftKey&&(document.activeElement===first||!scope.contains(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&(document.activeElement===last||!scope.contains(document.activeElement))){e.preventDefault();first.focus();}}}
     try{
       root.addEventListener('zebrol-map-auth-error',authError);
       if(googleFailure)throw new Error(googleFailure);

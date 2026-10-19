@@ -31,3 +31,22 @@
 .zmap-demo-details p{overflow-wrap:anywhere}
 .zmap-overlay :focus-visible{outline:2px solid #60a5fa;outline-offset:2px}
 @media (prefers-reduced-motion:reduce){.zmap-overlay *{scroll-behavior:auto!important}}
+
+/* Full-screen map only: existing Zebrol cards and screens remain untouched. */
+.zmap-overlay{display:block;height:100vh;height:100dvh;padding:0;overflow:hidden;border:0;margin:0}
+.zmap-stage{position:absolute;inset:0}
+.zmap-controls{position:absolute;z-index:5;top:calc(env(safe-area-inset-top,0px) + 12px);right:calc(env(safe-area-inset-right,0px) + 12px);display:flex;flex-direction:column;gap:8px}
+.zmap-controls button,.zmap-search-toggle,.zmap-tools button{width:44px;height:44px;min-width:44px;padding:0;background:#111827ed;color:#fff;border:1px solid #4b5563;border-radius:8px;box-shadow:0 2px 5px #0005;font-size:23px;line-height:1}
+.zmap-controls .zmap-close{color:#f87171;font-size:28px}
+.zmap-search-toggle{position:absolute;z-index:5;top:calc(env(safe-area-inset-top,0px) + 12px);left:calc(env(safe-area-inset-left,0px) + 12px)}
+.zmap-tools{position:absolute;z-index:5;bottom:calc(env(safe-area-inset-bottom,0px) + 58px);left:calc(env(safe-area-inset-left,0px) + 12px);padding:0;border:0;gap:8px}
+.zmap-tools button[aria-pressed=true]{background:#1d4ed8;border-color:#93c5fd}
+.zmap-caption{position:absolute;top:calc(env(safe-area-inset-top,0px) + 14px);left:72px;right:72px;z-index:4;width:fit-content;max-width:calc(100% - 144px);margin:0 auto;padding:4px 6px;border-radius:5px;background:#111827bb;pointer-events:none;font-size:10px}
+.zmap-status{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 110px);left:12px;right:72px;z-index:4;min-height:0;width:fit-content;max-width:calc(100% - 84px);padding:4px 7px;border-radius:5px;background:#111827cc;font-size:11px;pointer-events:none;margin:0}
+.zmap-status:empty{display:none}
+.zmap-search{position:absolute;z-index:6;top:calc(env(safe-area-inset-top,0px) + 64px);left:calc(env(safe-area-inset-left,0px) + 12px);right:calc(env(safe-area-inset-right,0px) + 72px);max-width:400px;background:#111827f5;border:1px solid #4b5563;border-radius:8px;padding:8px;display:flex;flex-wrap:wrap;gap:6px;color:#fff}
+.zmap-search[hidden]{display:none}
+.zmap-search input{flex:1;min-width:100px;width:100%;font-size:16px;background:#1f2937;color:white;padding:8px;border-radius:4px}
+.zmap-search button{padding:0 8px;border-radius:4px;background:#374151;color:white}
+.zmap-search p{flex-basis:100%;font-size:12px;line-height:1.4;margin:0}
+.zmap-shade{z-index:10;padding:calc(env(safe-area-inset-top,0px) + 12px) 12px calc(env(safe-area-inset-bottom,0px) + 12px)}
