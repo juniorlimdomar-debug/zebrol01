@@ -1,8 +1,8 @@
 (function(root){
   'use strict';
-  // Phase 1 is isolated: fixtures only, no Firestore, no geocoder, no real records.
+  // Google Maps preview: fixtures only, no Firestore, no geocoder, no real records.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-demo-1';
+  const REV='map-google-1';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -14,9 +14,38 @@
       document.head.appendChild(el);
     });
   }
+  let googleAssets,googleFailure=null,retainedMap=null;
+  const authMessage='Google Maps não autorizou o carregamento. Confira a chave de navegador, o domínio deste Preview e as restrições da API na Vercel/Google Cloud.';
+  async function loadGoogle(){
+    if(googleFailure)throw new Error(googleFailure);
+    if(root.google?.maps?.Map&&root.google?.maps?.marker?.AdvancedMarkerElement)return;
+    if(!googleAssets)googleAssets=(async()=>{
+      const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+      let config;
+      try{
+        const response=await fetch(new URL('api/maps-config',document.baseURI),{cache:'no-store',signal:controller.signal});
+        config=await response.json();
+        if(!response.ok)throw new Error(config.error||'Configuração do mapa indisponível.');
+        if(typeof config.key!=='string'||!config.key.trim())throw new Error('Chave de navegador não configurada na Vercel.');
+      }finally{clearTimeout(timeout);}
+      await new Promise((resolve,reject)=>{
+        const script=document.createElement('script');let settled=false;
+        const timer=setTimeout(()=>fail('O Google Maps demorou a carregar. Confira a conexão e reabra esta página para tentar novamente.'),20000);
+        function fail(message){googleFailure=message;root.dispatchEvent(new Event('zebrol-map-auth-error'));if(settled)return;settled=true;clearTimeout(timer);reject(new Error(message));}
+        root.gm_authFailure=()=>fail(authMessage);
+        root.__zebrolGoogleReady=()=>{if(settled)return;if(!root.google?.maps?.Map||!root.google?.maps?.marker?.AdvancedMarkerElement){fail('Google Maps não ficou disponível. Reabra a página para tentar novamente.');return;}settled=true;clearTimeout(timer);resolve();};
+        script.onerror=()=>fail('Não foi possível carregar o Google Maps. Verifique sua conexão e reabra a página.');
+        const url=new URL('https://maps.googleapis.com/maps/api/js');
+        url.search=new URLSearchParams({key:config.key,v:'quarterly',loading:'async',libraries:'marker',language:'pt-BR',region:'BR',callback:'__zebrolGoogleReady'}).toString();
+        script.src=url.href;script.async=true;document.head.appendChild(script);
+      });
+    })().catch(error=>{googleAssets=null;throw error;});
+    return googleAssets;
+  }
   function load(){
-    if(!assets)assets=Promise.all([asset('link','zebrol-map.css'),asset('link','vendor/leaflet/leaflet.css'),root.L?Promise.resolve():asset('script','vendor/leaflet/leaflet.js')]).catch(error=>{assets=null;throw error;});
-    return assets;
+    if(navigator.onLine===false)return Promise.reject(new Error('Conecte-se à internet para abrir o Google Maps. Os cadastros offline continuam disponíveis.'));
+    if(!assets)assets=asset('link','zebrol-map.css').catch(error=>{assets=null;throw error;});
+    return Promise.all([assets,loadGoogle()]);
   }
   function portrait(color,shirt){
     const svg='<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400" viewBox="0 0 300 400"><rect width="300" height="400" fill="'+color+'"/><circle cx="150" cy="142" r="64" fill="#d6c3ac"/><path d="M86 136q0-85 66-85t64 85q-32-31-49-41-22 39-81 41" fill="#3a3430"/><path d="M43 400v-77q0-98 107-98t107 98v77" fill="'+shirt+'"/><text x="150" y="380" text-anchor="middle" font-family="sans-serif" font-size="16" fill="white">IMAGEM FICTÍCIA</text></svg>';
@@ -52,40 +81,42 @@
     }
     return {enable(){enabled=true;start();},visibility(){stop();if(enabled&&isVisible())start();},dispose(){disposed=true;enabled=false;stop();}};
   }
-  // Provider boundary: only the Leaflet adapter knows map APIs. No Google code or keys.
-  function demoProvider(L,host,onManual){
-    const map=L.map(host,{center:CENTER,zoom:15,minZoom:12,maxZoom:19,maxBounds:BOUNDS,maxBoundsViscosity:1,zoomControl:false});
-    L.control.zoom({position:'topright'}).addTo(map);
-    map.attributionControl.addAttribution('Base ilustrativa — sem ruas reais');
-    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 1000 1000');
-    // Schematic artwork, deliberately not a representation of real streets/property boundaries.
-    svg.innerHTML='<rect width="1000" height="1000" fill="#283741"/><defs><pattern id="zmap-blocks" width="80" height="80" patternUnits="userSpaceOnUse"><rect x="8" y="8" width="64" height="64" rx="6" fill="#344651"/><path d="M0 0H80M0 0V80" stroke="#6d7880" stroke-width="5"/></pattern></defs><rect width="1000" height="1000" fill="url(#zmap-blocks)"/><path d="M20 790Q320 690 430 800T990 580" fill="none" stroke="#345f78" stroke-width="90"/><path d="M0 410L1000 410M390 0L390 1000" stroke="#b0a487" stroke-width="12"/><text x="440" y="370" fill="#dbe3e9" font-size="26" font-family="sans-serif">ÁREA ILUSTRATIVA</text>';
-    L.svgOverlay(svg,BOUNDS,{interactive:false}).addTo(map);
-    map.on('dragstart',onManual);map.on('zoomstart',event=>{if(event.originalEvent)onManual();});
-    let dot,accuracy;
+  // Only this adapter knows Google Maps. Cards and GPS lifecycle remain shared.
+  function googleProvider(G,host,onManual){
+    const ll=p=>({lat:p.latitude,lng:p.longitude});
+    if(!retainedMap){
+      const surface=document.createElement('div');surface.style.cssText='width:100%;height:100%';host.append(surface);
+      retainedMap={surface,map:new G.Map(surface,{center:{lat:CENTER[0],lng:CENTER[1]},zoom:15,minZoom:3,maxZoom:20,mapId:'DEMO_MAP_ID',disableDefaultUI:true,zoomControl:true,zoomControlOptions:{position:G.ControlPosition.RIGHT_TOP},gestureHandling:'greedy',clickableIcons:false})};
+    }else host.append(retainedMap.surface);
+    const {map,surface}=retainedMap,markers=[],listeners=[];let dot,accuracy;
+    map.setCenter({lat:CENTER[0],lng:CENTER[1]});map.setZoom(15);
+    listeners.push(map.addListener('dragstart',onManual));
     return {
-      marker(p,count,click){const icon=L.divIcon({className:'zmap-marker',html:'🥷'+(count>1?'<b>'+count+'</b>':''),iconSize:[44,44],iconAnchor:[22,22]});const marker=L.marker([p.latitude,p.longitude],{icon,title:'Endereço demonstrativo · '+count+' cadastro(s)',alt:'Abrir endereço demonstrativo',keyboard:true}).addTo(map);marker.on('click',click);return marker;},
-      position(p,follow){const ll=[p.latitude,p.longitude];if(!dot){accuracy=L.circle(ll,{radius:p.accuracy,color:'#60a5fa',fillColor:'#60a5fa',fillOpacity:0.12,weight:1,interactive:false}).addTo(map);dot=L.circleMarker(ll,{radius:7,color:'white',weight:2,fillColor:'#2563eb',fillOpacity:1,interactive:false}).addTo(map);}else{dot.setLatLng(ll);accuracy.setLatLng(ll).setRadius(p.accuracy);}if(follow&&inside(p))map.panTo(ll);},
-      clearPosition(){if(dot){map.removeLayer(dot);map.removeLayer(accuracy);dot=accuracy=null;}},
-      home(){map.setView(CENTER,15);},resize(){map.invalidateSize();},destroy(){map.remove();}
+      marker(p,count,click){const content=document.createElement('div');content.className='zmap-marker';content.style.cssText='position:relative;width:44px;height:44px';content.textContent='🥷';if(count>1){const badge=document.createElement('b');badge.textContent=String(count);content.append(badge);}
+        const marker=new G.marker.AdvancedMarkerElement({map,position:ll(p),content,title:'Endereço demonstrativo · '+count+' cadastro(s)'});listeners.push(marker.addListener('click',click));markers.push(marker);return marker;},
+      position(p,follow){const center=ll(p);if(!dot){accuracy=new G.Circle({map,center,radius:p.accuracy,strokeColor:'#60a5fa',strokeWeight:1,fillColor:'#60a5fa',fillOpacity:0.12,clickable:false});const content=document.createElement('div');content.style.cssText='width:16px;height:16px;border:2px solid white;border-radius:50%;background:#2563eb;box-sizing:border-box;transform:translateY(50%)';dot=new G.marker.AdvancedMarkerElement({map,position:center,content,title:'Sua localização',zIndex:1000});}else{dot.position=center;accuracy.setCenter(center);accuracy.setRadius(p.accuracy);}if(follow)map.panTo(center);},
+      clearPosition(){if(dot){dot.map=null;accuracy.setMap(null);dot=accuracy=null;}},
+      home(){map.setCenter({lat:CENTER[0],lng:CENTER[1]});map.setZoom(15);},
+      resize(){G.event.trigger(map,'resize');},
+      destroy(){this.clearPosition();for(const listener of listeners)listener.remove();for(const marker of markers)marker.map=null;surface.remove();map.setCenter({lat:CENTER[0],lng:CENTER[1]});}
     };
   }
   function element(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text)e.textContent=text;return e;}
   function button(text,label,fn,className=''){const b=element('button',className,text);b.type='button';b.setAttribute('aria-label',label);b.onclick=fn;return b;}
-  async function open({launcher,point,onClose,signal,provider=demoProvider}={}){
+  async function open({launcher,point,onClose,signal,provider=googleProvider}={}){
     if(activeSession){activeSession.focus();return activeSession;}
     await load();
     if(signal?.aborted)throw new DOMException('Abertura cancelada.','AbortError');
     if(activeSession){activeSession.focus();return activeSession;}
     const overlay=element('section','zmap-overlay');overlay.setAttribute('role','dialog');overlay.setAttribute('aria-modal','true');overlay.setAttribute('aria-label','Mapa demonstrativo');
     const header=element('header','zmap-header'),title=element('h2','','MAPA · DEMONSTRAÇÃO');
-    const caption=element('p','zmap-caption','Cadastros e vias fictícios · não indica presença de pessoas');
+    const caption=element('p','zmap-caption','Cadastros fictícios · mapa real · não indica presença de pessoas');
     const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('p','zmap-status','Toque em 🥷 para testar os cards. GPS somente se você ativar.');status.setAttribute('role','status');
     const shade=element('div','zmap-shade');shade.hidden=true;stage.append(canvas,shade);
     let disposed=false,following=true,lastPoint=null,selected=null,index=0,detail=false,tracker,map,observer;
     const oldOverflow=document.body.style.overflow;
     function closeCard(){shade.hidden=true;shade.replaceChildren();detail=false;selected=null;}
-    function close(){if(disposed)return;disposed=true;tracker?.dispose();observer?.disconnect();document.removeEventListener('visibilitychange',visibility);root.removeEventListener('pagehide',pagehide);root.removeEventListener('pageshow',pageshow);document.removeEventListener('keydown',keys,true);signal?.removeEventListener('abort',close);map?.destroy();overlay.remove();document.body.style.overflow=oldOverflow;activeSession=null;lastPoint=null;launcher?.focus({preventScroll:true});onClose?.();root.dispatchEvent(new Event('zebrol-update-state'));}
+    function close(){if(disposed)return;disposed=true;tracker?.dispose();observer?.disconnect();document.removeEventListener('visibilitychange',visibility);root.removeEventListener('pagehide',pagehide);root.removeEventListener('pageshow',pageshow);document.removeEventListener('keydown',keys,true);signal?.removeEventListener('abort',close);root.removeEventListener('zebrol-map-auth-error',authError);map?.destroy();overlay.remove();document.body.style.overflow=oldOverflow;activeSession=null;lastPoint=null;launcher?.focus({preventScroll:true});onClose?.();root.dispatchEvent(new Event('zebrol-update-state'));}
     const exit=button('×','Fechar mapa',close,'zmap-close');header.append(title,exit);
     function drawCard(){
       shade.replaceChildren();shade.hidden=false;detail=false;const row=selected.rows[index],area=element('div','zmap-card-area');
@@ -104,18 +135,21 @@
       for(const [label,value]of [['Nome',row.name],['Vulgo',row.vulgo||'—'],['Endereço',row.address],['Descrição','Cadastro fictício, somente para testar a interface. Nenhuma informação foi salva no Zebrol.']]){const p=element('p'),b=element('b','',label+': ');p.append(b,document.createTextNode(value));panel.append(p);}panel.append(element('p','zmap-card-note','Demonstração · somente leitura'));shade.append(panel);back.focus({preventScroll:true});
     }
     shade.onclick=e=>{if(e.target===shade)closeCard();};
-    function follow(){following=true;gps.setAttribute('aria-pressed','true');if(lastPoint&&inside(lastPoint))map.position(lastPoint,true);tracker.enable();}
+    function follow(){following=true;gps.setAttribute('aria-pressed','true');if(lastPoint)map.position(lastPoint,true);tracker.enable();}
     const gps=button('◎ Ativar / seguir GPS','Ativar ou recentralizar GPS',follow);gps.setAttribute('aria-pressed','false');
     tools.append(gps,button('🥷 Exemplos','Voltar aos marcadores demonstrativos',()=>{following=false;gps.setAttribute('aria-pressed','false');map.home();}));
     overlay.append(header,caption,stage,tools,status);document.body.append(overlay);document.body.style.overflow='hidden';
+    function authError(){tracker?.dispose();map?.clearPosition();status.textContent=googleFailure||authMessage;}
     function visibility(){tracker.visibility();if(document.visibilityState!=='visible'){lastPoint=null;map.clearPosition();status.textContent='GPS pausado enquanto o aplicativo está em segundo plano.';}else map.resize();}
     function pagehide(){tracker.dispose();lastPoint=null;map.clearPosition();}
     function pageshow(event){if(event.persisted)close();}
     function keys(e){if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(detail)drawCard();else if(!shade.hidden)closeCard();else close();}if(e.key==='Tab'){const scope=shade.hidden?overlay:shade;const list=[...scope.querySelectorAll('button,a,[tabindex="0"]')].filter(el=>!el.disabled);if(!list.length)return;const first=list[0],last=list.at(-1);if(e.shiftKey&&(document.activeElement===first||!scope.contains(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&(document.activeElement===last||!scope.contains(document.activeElement))){e.preventDefault();first.focus();}}}
     try{
-      map=provider(root.L,canvas,()=>{following=false;gps.setAttribute('aria-pressed','false');});
+      root.addEventListener('zebrol-map-auth-error',authError);
+      if(googleFailure)throw new Error(googleFailure);
+      map=provider(root.google.maps,canvas,()=>{following=false;gps.setAttribute('aria-pressed','false');});
       for(const g of group(fixtures(),point))map.marker(g.point,g.rows.length,()=>{selected=g;index=0;drawCard();});
-      tracker=gpsTracker({geo:navigator.geolocation,point,isVisible:()=>!disposed&&document.visibilityState==='visible',onStatus:text=>{status.textContent=text;gps.setAttribute('aria-pressed','false');},onPoint:p=>{lastPoint=p;map.position(p,following);gps.setAttribute('aria-pressed',String(following&&inside(p)));status.textContent=inside(p)?'Sua posição · precisão aproximada de '+Math.round(p.accuracy)+' m':'GPS fora da área ilustrativa. Os exemplos continuam disponíveis.';}});
+      tracker=gpsTracker({geo:navigator.geolocation,point,isVisible:()=>!disposed&&document.visibilityState==='visible',onStatus:text=>{status.textContent=text;gps.setAttribute('aria-pressed','false');},onPoint:p=>{lastPoint=p;map.position(p,following);gps.setAttribute('aria-pressed',String(following));status.textContent='Sua posição · precisão aproximada de '+Math.round(p.accuracy)+' m';}});
       document.addEventListener('visibilitychange',visibility);root.addEventListener('pagehide',pagehide);root.addEventListener('pageshow',pageshow);document.addEventListener('keydown',keys,true);
       signal?.addEventListener('abort',close,{once:true});
       if(root.ResizeObserver){observer=new ResizeObserver(()=>map.resize());observer.observe(stage);}
@@ -123,5 +157,5 @@
       activeSession={close,focus:()=>exit.focus({preventScroll:true})};return activeSession;
     }catch(error){close();throw error;}
   }
-  root.ZebrolMapPhase1={open,fixtures,group,gpsTracker,demoProvider,BOUNDS};
+  root.ZebrolMapPhase1={open,fixtures,group,gpsTracker,googleProvider,BOUNDS};
 })(window);
