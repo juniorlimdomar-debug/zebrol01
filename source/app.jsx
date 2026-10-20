@@ -600,18 +600,16 @@ function MapDemoButton({user}){
   const [loading,setLoading]=useState(false),[error,setError]=useState('');
   const button=useRef(null),operation=useRef(null);
   const testCache=useRef(null);
-  const loadTestRecord=async signal=>{
+  const loadTestRecord=async (signal,item)=>{
     if(!navigator.onLine)throw new Error('O teste do endereço precisa de internet.');
     const account=auth.currentUser;
     if(!account||account.uid!==user.authUid)throw new Error('Sessão alterada. Abra novamente o mapa.');
-    const snapshot=await db.collection('users').doc(dataOwner(user.uid)).collection('items')
-      .where('name','==','TESTE ENDEREÇO').limit(2).get({source:'server'});
-    if(signal.aborted)return null;
-    if(snapshot.empty)return null;
-    if(snapshot.size!==1)throw new Error('Existe mais de um TESTE ENDEREÇO. Nenhum foi mapeado.');
-    const doc=snapshot.docs[0],item={...doc.data(),id:doc.id};
     if(item.name!=='TESTE ENDEREÇO'||(item.type&&item.type!=='person')||String(item.cpf||'').trim())
       throw new Error('O teste exige nome TESTE ENDEREÇO e CPF vazio.');
+    const parsed=window.ZebrolMapAddress.parse(item.address);
+    if(!parsed)throw new Error('Endereço incompleto ou inválido. Nenhum ponto foi mantido.');
+    const coordinates=ZebrolLocation.point(item);
+    const inputKey=JSON.stringify([item.id,parsed.query,coordinates?{lat:coordinates.latitude,lng:coordinates.longitude}:null]);
     const fingerprint=JSON.stringify([account.uid,item.id,item.address,item.latitude,item.longitude]);
     let result=testCache.current?.fingerprint===fingerprint&&testCache.current.until>Date.now()?testCache.current.result:null;
     if(!result){
@@ -621,7 +619,8 @@ function MapDemoButton({user}){
       if(!response.ok)throw new Error(payload.error||'Não foi possível consultar o teste.');
       result=payload.record;
       if(!result)return null;
-      if(result.id!==item.id)throw new Error('O cadastro mudou durante a consulta. Reabra o mapa.');
+      if(result.id!==item.id||result.inputKey!==inputKey)throw new Error('O endereço mudou durante a consulta. Aguarde a atualização do cadastro.');
+      if(signal.aborted)return null;
       testCache.current={fingerprint,result,until:Date.now()+600000};
     }
     if(signal.aborted||auth.currentUser?.uid!==account.uid)return null;
@@ -629,12 +628,36 @@ function MapDemoButton({user}){
       latitude:result.point.lat,longitude:result.point.lng,precision:result.approximate?'aproximada':'localizada',
       note:result.note,testRecord:true,loadImage:()=>loadThumbnail(user.uid,item)};
   };
+  const watchTestRecord=({signal,onChange,onError})=>{
+    let stopped=false,epoch=0,request,timer,lastSnapshot;
+    const invalidate=()=>{epoch++;clearTimeout(timer);request?.abort();request=null;onChange(null);};
+    const unsubscribe=db.collection('users').doc(dataOwner(user.uid)).collection('items')
+      .where('name','==','TESTE ENDEREÇO').limit(2).onSnapshot({includeMetadataChanges:true},snapshot=>{
+        if(stopped)return;
+        if(snapshot.metadata.fromCache||snapshot.metadata.hasPendingWrites){invalidate();lastSnapshot=null;return;}
+        if(snapshot.empty){invalidate();lastSnapshot=null;testCache.current=null;return;}
+        if(snapshot.size!==1){invalidate();lastSnapshot=null;testCache.current=null;onError(new Error('Existe mais de um TESTE ENDEREÇO. Nenhum foi mapeado.'));return;}
+        const doc=snapshot.docs[0],item={...doc.data(),id:doc.id};
+        if(testCache.current?.fingerprint!==JSON.stringify([user.authUid,item.id,item.address,item.latitude,item.longitude]))testCache.current=null;
+        const signature=JSON.stringify([item.id,item.name,item.type,item.cpf,item.address,item.latitude,item.longitude,item.vulgo,item.photoVersion,item.hasPhoto]);
+        if(signature===lastSnapshot)return;
+        lastSnapshot=signature;invalidate();const version=epoch;
+        timer=setTimeout(async()=>{
+          request=new AbortController();
+          try{const row=await loadTestRecord(request.signal,item);if(!stopped&&version===epoch)onChange(row);}
+          catch(error){if(!stopped&&version===epoch&&error.name!=='AbortError')onError(error);}
+        },300);
+      },error=>{if(!stopped){invalidate();testCache.current=null;onError(error);}});
+    const stop=()=>{if(stopped)return;stopped=true;epoch++;clearTimeout(timer);request?.abort();unsubscribe();signal?.removeEventListener('abort',stop);};
+    signal?.addEventListener('abort',stop,{once:true});if(signal?.aborted)stop();
+    return stop;
+  };
   useEffect(()=>()=>{operation.current?.abort();},[]);
   const cancel=()=>{operation.current?.abort();operation.current=null;setLoading(false);setError('');};
   const open=async()=>{
     if(operation.current)return;
     const controller=new AbortController();operation.current=controller;setLoading(true);setError('');
-    try{const module=await loadMapDemo();if(controller.signal.aborted)return;await module.open({launcher:button.current,point:ZebrolLocation.point,signal:controller.signal,loadTestRecord,onClose:()=>{controller.abort();if(operation.current===controller)operation.current=null;}});}
+    try{const module=await loadMapDemo();if(controller.signal.aborted)return;await module.open({launcher:button.current,point:ZebrolLocation.point,signal:controller.signal,watchTestRecord,onClose:()=>{controller.abort();if(operation.current===controller)operation.current=null;}});}
     catch(e){if(!controller.signal.aborted){setError(e.message);operation.current=null;}}
     finally{if(!controller.signal.aborted)setLoading(false);}
   };

@@ -1,6 +1,7 @@
 'use strict';
 // Preview-only, read-only endpoint. Never accepts a record ID or an address.
 const crypto=require('node:crypto');
+const addresses=require('../lib/map-address.js');
 const OWNER='1Cmku6frFfWYhMfOUhGUTNffkGu1',PROJECT='zebrol',NAME='TESTE ENDEREÇO';
 const ROOT=`https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 let certificates,certificatesUntil=0;
@@ -38,9 +39,7 @@ async function authenticate(token){
   return payload.sub;
 }
 function street(value){
-  if(typeof value!=='string'||value.length>160)return null;
-  const text=value.trim().replace(/\s+/g,' ');
-  return /^(rua|r\.|avenida|av\.|travessa|tv\.|alameda|estrada|rodovia)\s+\S+/i.test(text)?text:null;
+  return addresses.parse(value)?.query||null;
 }
 function value(field){return field?.stringValue??field?.doubleValue??field?.integerValue;}
 async function record(token){
@@ -63,7 +62,8 @@ async function record(token){
     String(value(f.latitude)).trim()&&String(value(f.longitude)).trim()&&
     Number.isFinite(latitude)&&Number.isFinite(longitude)&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180
       ?{lat:latitude,lng:longitude}:null;
-  return {id:doc.name.split('/').pop(),address,point};
+  const id=doc.name.split('/').pop();
+  return {id,address,point,inputKey:JSON.stringify([id,address,point])};
 }
 async function quota(uid){
   const url=process.env.KV_REST_API_URL,token=process.env.KV_REST_API_TOKEN;
@@ -77,13 +77,7 @@ async function quota(uid){
   if(data.result!==1)throw fail(429,'Limite de consultas do teste atingido. Tente em outro dia.');
 }
 function accepted(row){
-  const parts=row.address_components||[];
-  const has=(type,name)=>parts.some(p=>p.types?.includes(type)&&(p.short_name===name||p.long_name===name));
-  return !row.partial_match&&has('administrative_area_level_2','Altamira')&&
-    has('administrative_area_level_1','PA')&&has('country','BR')&&
-    parts.some(p=>p.types?.includes('route'))&&
-    row.types?.some(t=>['street_address','route','premise'].includes(t))&&
-    !row.types?.some(t=>['establishment','point_of_interest'].includes(t));
+  return addresses.municipal(row);
 }
 async function handler(req,res){
   res.setHeader('Cache-Control','no-store');
@@ -104,18 +98,19 @@ async function handler(req,res){
     const {data}=await json('https://maps.googleapis.com/maps/api/geocode/json?'+query);
     if(data.status==='ZERO_RESULTS')throw fail(422,'O Google não encontrou esse endereço. Nenhuma coordenada foi criada.');
     if(data.status!=='OK')throw fail(503,'O Google não autorizou ou não concluiu a consulta do endereço.');
-    const matches=(data.results||[]).filter(accepted);
+    const parsed=addresses.parse(row.address);
+    const matches=(data.results||[]).filter(result=>row.point?accepted(result):addresses.quality(result,parsed));
     if(row.point){
       if(!matches.length)throw fail(422,'As coordenadas existentes não foram confirmadas em Altamira–PA.');
-      return res.status(200).json({record:{id:row.id,point:row.point,source:'existing',approximate:true,
+      return res.status(200).json({record:{id:row.id,inputKey:row.inputKey,point:row.point,source:'existing',approximate:true,
         note:'Coordenadas do cadastro; município confirmado. Confira a posição no mapa.'}});
     }
     if(matches.length!==1)throw fail(422,'Endereço ambíguo ou fora de Altamira–PA. Confira o cadastro.');
     const result=matches[0],point=result.geometry?.location;
     if(!point||!Number.isFinite(point.lat)||!Number.isFinite(point.lng))throw fail(422,'Localização inválida.');
-    return res.status(200).json({record:{id:row.id,point,source:'google',
-      approximate:result.geometry.location_type!=='ROOFTOP',
-      note:result.geometry.location_type==='ROOFTOP'?'Endereço localizado pelo Google':'Localização aproximada do endereço'}});
+    const approximate=addresses.quality(result,parsed).approximate;
+    return res.status(200).json({record:{id:row.id,inputKey:row.inputKey,point,source:'google',
+      approximate,note:approximate?'Localização aproximada do endereço':'Endereço localizado pelo Google; confira a posição'}});
   }catch(error){return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.'});}
 }
 module.exports=handler;
