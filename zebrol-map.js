@@ -1,8 +1,8 @@
 (function(root){
   'use strict';
-  // Google Maps preview: fixtures only, no Firestore, no geocoder, no real records.
+  // Google Maps preview: fictional records only; manual public street search, no Firestore or personal-record geocoding.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-visual-1';
+  const REV='map-search-1';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -81,6 +81,48 @@
     }
     return {enable(){enabled=true;start();},visibility(){stop();if(enabled&&isVisible())start();},dispose(){disposed=true;enabled=false;stop();}};
   }
+  // Manual public street search is independent of records and GPS.
+  const normalizeAddress=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  function streetQuery(value){
+    let text=String(value||'').trim().replace(/\s+/g,' ');
+    if(!text||text.length>160||/[<>@\n\r]/.test(text))return null;
+    text=text.replace(/^r\.?(?=\s)/i,'Rua').replace(/^tv\.?(?=\s)/i,'Travessa').replace(/^av\.?(?=\s)/i,'Avenida');
+    if(!/^(Rua|Travessa|Avenida|Alameda|Estrada|Rodovia)\s+\S/i.test(text))return null;
+    return text;
+  }
+  function acceptedStreet(row){
+    const parts=row.address_components||[],part=type=>parts.find(p=>(p.types||[]).includes(type));
+    const city=part('administrative_area_level_2'),state=part('administrative_area_level_1'),country=part('country');
+    return normalizeAddress(city?.long_name)==='altamira'&&state?.short_name==='PA'&&country?.short_name==='BR'
+      &&part('route')&&!row.partial_match&&(row.types||[]).some(t=>['route','street_address','premise'].includes(t))
+      &&!(row.types||[]).some(t=>['establishment','point_of_interest'].includes(t));
+  }
+  // Browser-side pacing is UX protection, not a substitute for Google project quotas.
+  let searchFlight=null,lastSearchAt=0,searchTimes=[];
+  async function lookupStreet(G,value){
+    const text=streetQuery(value);if(!text)throw new Error('Digite Rua, Travessa ou Avenida e o nome da via. Não pesquise pessoas ou estabelecimentos.');
+    if(navigator.onLine===false)throw new Error('Conecte-se à internet para pesquisar ruas.');
+    if(searchFlight)throw new Error('Aguarde a pesquisa em andamento.');
+    const now=Date.now();searchTimes=searchTimes.filter(t=>now-t<60000);
+    if(now-lastSearchAt<5000||searchTimes.length>=10)throw new Error('Aguarde alguns segundos antes de pesquisar novamente.');
+    lastSearchAt=now;searchTimes.push(now);
+    searchFlight=(async()=>{
+      const Geocoder=G.Geocoder||(await G.importLibrary('geocoding')).Geocoder;
+      return new Promise((resolve,reject)=>{
+        // Do not unlock the shared flight on a UI timeout: the provider call may still be running.
+        new Geocoder().geocode({address:text+', Altamira, Pará, Brasil',region:'BR',componentRestrictions:{country:'BR',administrativeArea:'PA',locality:'Altamira'}},(rows,status)=>{
+          if(status==='ZERO_RESULTS')return reject(new Error('Endereço não encontrado em Altamira–PA.'));
+          if(status!=='OK')return reject(new Error(status==='REQUEST_DENIED'?'Pesquisa não autorizada pelo Google. Confira a Geocoding API e a permissão dessa API na chave de navegador.':status==='OVER_QUERY_LIMIT'?'Limite de consultas atingido. Tente mais tarde.':'Não foi possível pesquisar agora. Tente novamente mais tarde.'));
+          const accepted=(rows||[]).filter(acceptedStreet);
+          if(accepted.length!==1)return reject(new Error(accepted.length?'Endereço ambíguo. Informe o bairro ou número.':'Não encontrei uma rua correspondente com município Altamira–PA confirmado.'));
+          const row=accepted[0],loc=row.geometry?.location,latitude=loc?.lat(),longitude=loc?.lng();
+          if(!Number.isFinite(latitude)||!Number.isFinite(longitude)||Math.abs(latitude)>90||Math.abs(longitude)>180)return reject(new Error('O Google não retornou uma posição válida.'));
+          resolve({latitude,longitude,label:row.formatted_address,approximate:row.geometry.location_type!=='ROOFTOP'});
+        });
+      });
+    })();
+    try{return await searchFlight;}finally{searchFlight=null;}
+  }
   // Only this adapter knows Google Maps. Cards and GPS lifecycle remain shared.
   function googleProvider(G,host,onManual){
     const ll=p=>({lat:p.latitude,lng:p.longitude});
@@ -88,7 +130,7 @@
       const surface=document.createElement('div');surface.style.cssText='width:100%;height:100%';host.append(surface);
       retainedMap={surface,map:new G.Map(surface,{center:{lat:CENTER[0],lng:CENTER[1]},zoom:15,minZoom:3,maxZoom:20,mapId:'DEMO_MAP_ID',disableDefaultUI:true,zoomControl:false,gestureHandling:'greedy',clickableIcons:false})};
     }else host.append(retainedMap.surface);
-    const {map,surface}=retainedMap,markers=[],listeners=[];let dot,accuracy;
+    const {map,surface}=retainedMap,markers=[],listeners=[];let dot,accuracy,searchMarker;
     map.setCenter({lat:CENTER[0],lng:CENTER[1]});map.setZoom(15);
     listeners.push(map.addListener('dragstart',onManual));
     return {
@@ -96,11 +138,13 @@
         const marker=new G.marker.AdvancedMarkerElement({map,position:ll(p),content,title:'Endereço demonstrativo · '+count+' cadastro(s)'});listeners.push(marker.addListener('click',click));markers.push(marker);return marker;},
       position(p,follow){const center=ll(p);if(!dot){accuracy=new G.Circle({map,center,radius:p.accuracy,strokeColor:'#60a5fa',strokeWeight:1,fillColor:'#60a5fa',fillOpacity:0.12,clickable:false});const content=document.createElement('div');content.style.cssText='width:16px;height:16px;border:2px solid white;border-radius:50%;background:#2563eb;box-sizing:border-box;transform:translateY(50%)';dot=new G.marker.AdvancedMarkerElement({map,position:center,content,title:'Sua localização',zIndex:1000});}else{dot.position=center;accuracy.setCenter(center);accuracy.setRadius(p.accuracy);}if(follow)map.panTo(center);},
       clearPosition(){if(dot){dot.map=null;accuracy.setMap(null);dot=accuracy=null;}},
-      zoom(delta){map.setZoom(Math.max(3,Math.min(20,(map.getZoom()||15)+delta)));},
+      zoom(delta){onManual();map.setZoom(Math.max(3,Math.min(20,(map.getZoom()||15)+delta)));},
       center(p){map.panTo(ll(p));map.setZoom(17);},
+      search(value){return lookupStreet(G,value);},
+      searchResult(p){if(searchMarker)searchMarker.map=null;const content=document.createElement('div');content.textContent='📍';content.style.fontSize='30px';searchMarker=new G.marker.AdvancedMarkerElement({map,position:ll(p),content,title:p.label,zIndex:999});this.center(p);},
       home(){map.setCenter({lat:CENTER[0],lng:CENTER[1]});map.setZoom(15);},
       resize(){G.event.trigger(map,'resize');},
-      destroy(){this.clearPosition();for(const listener of listeners)listener.remove();for(const marker of markers)marker.map=null;surface.remove();map.setCenter({lat:CENTER[0],lng:CENTER[1]});}
+      destroy(){this.clearPosition();if(searchMarker)searchMarker.map=null;for(const listener of listeners)listener.remove();for(const marker of markers)marker.map=null;surface.remove();map.setCenter({lat:CENTER[0],lng:CENTER[1]});}
     };
   }
   function element(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text)e.textContent=text;return e;}
@@ -141,17 +185,22 @@
     const gps=button('📍','Ativar ou recentralizar GPS',follow);gps.setAttribute('aria-pressed','false');
     tools.append(gps,button('🥷','Voltar aos marcadores demonstrativos',()=>{following=false;gps.setAttribute('aria-pressed','false');map.home();}));
     const search=element('form','zmap-search');search.hidden=true;
-    const input=element('input');input.type='search';input.placeholder='Endereço fictício';input.setAttribute('aria-label','Pesquisar endereço fictício');input.maxLength=160;
-    const hint=element('p','','Somente exemplos: Rua de Demonstração A, B ou Avenida de Demonstração C.');
+    const input=element('input');input.type='search';input.placeholder='Rua ou endereço de Altamira';input.setAttribute('aria-label','Pesquisar rua em Altamira');input.maxLength=160;
+    const hint=element('p','','Use Rua, Travessa ou Avenida. A consulta digitada será enviada ao Google somente ao tocar em Buscar.');
     const result=element('p');result.setAttribute('role','status');
-    const submit=button('Buscar','Buscar endereço fictício',()=>{});submit.type='submit';
-    const searchToggle=button('🔍','Pesquisar endereços fictícios',()=>{search.hidden=!search.hidden;searchToggle.setAttribute('aria-expanded',String(!search.hidden));if(!search.hidden)input.focus();},'zmap-search-toggle');searchToggle.setAttribute('aria-expanded','false');
+    const submit=button('Buscar','Buscar rua em Altamira',()=>{});submit.type='submit';
+    const searchToggle=button('🔍','Pesquisar ruas de Altamira',()=>{search.hidden=!search.hidden;searchToggle.setAttribute('aria-expanded',String(!search.hidden));if(!search.hidden)input.focus();},'zmap-search-toggle');searchToggle.setAttribute('aria-expanded','false');
     search.append(input,submit,button('×','Fechar pesquisa',()=>{search.hidden=true;searchToggle.setAttribute('aria-expanded','false');searchToggle.focus();}),hint,result);
-    const normalize=value=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-    search.onsubmit=event=>{event.preventDefault();const query=normalize(input.value);if(!query){result.textContent='Digite um endereço fictício.';return;}
-      const groups=group(fixtures(),point).filter(g=>query.split(' ').every(word=>normalize(g.rows[0].address).split(' ').includes(word)));
-      if(groups.length!==1){result.textContent=groups.length?'Informe A, B ou C para escolher um dos exemplos.':'Nenhum endereço fictício encontrado. Esta prévia não consulta endereços reais.';return;}
-      following=false;gps.setAttribute('aria-pressed','false');map.center(groups[0].point);result.textContent='Endereço fictício localizado.';
+    let searching=false,lastQuery='',lastFound=null;
+    search.onsubmit=async event=>{
+      event.preventDefault();if(searching)return;
+      const text=streetQuery(input.value);if(!text){result.textContent='Digite Rua, Travessa ou Avenida e o nome da via.';return;}
+      if(lastFound&&lastQuery===normalizeAddress(text)){following=false;gps.setAttribute('aria-pressed','false');map.searchResult(lastFound);result.textContent=lastFound.label+(lastFound.approximate?' · localização aproximada':'');return;}
+      searching=true;submit.disabled=true;result.textContent='Buscando rua…';
+      const slow=setTimeout(()=>{if(!disposed&&searching)result.textContent='O Google está demorando. Você pode fechar a pesquisa ou o mapa.';},15000);
+      try{const found=await map.search(text);if(disposed)return;lastQuery=normalizeAddress(text);lastFound=found;following=false;gps.setAttribute('aria-pressed','false');map.searchResult(found);result.textContent=found.label+(found.approximate?' · localização aproximada':'');input.blur();}
+      catch(error){if(!disposed)result.textContent=error.message;}
+      finally{clearTimeout(slow);searching=false;submit.disabled=false;}
     };
     overlay.append(stage,caption,controls,searchToggle,search,tools,status);document.body.append(overlay);document.body.style.overflow='hidden';
     function authError(){tracker?.dispose();map?.clearPosition();status.textContent=googleFailure||authMessage;}
@@ -172,5 +221,5 @@
       activeSession={close,focus:()=>exit.focus({preventScroll:true})};return activeSession;
     }catch(error){close();throw error;}
   }
-  root.ZebrolMapPhase1={open,fixtures,group,gpsTracker,googleProvider,BOUNDS};
+  root.ZebrolMapPhase1={open,fixtures,group,gpsTracker,googleProvider,streetQuery,acceptedStreet,lookupStreet,BOUNDS};
 })(window);
