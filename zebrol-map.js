@@ -2,7 +2,7 @@
   'use strict';
   // Google Maps preview: fictional records only; manual public street search, no Firestore or personal-record geocoding.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-search-1';
+  const REV='map-test-address-1';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -128,7 +128,7 @@
     const ll=p=>({lat:p.latitude,lng:p.longitude});
     if(!retainedMap){
       const surface=document.createElement('div');surface.style.cssText='width:100%;height:100%';host.append(surface);
-      retainedMap={surface,map:new G.Map(surface,{center:{lat:CENTER[0],lng:CENTER[1]},zoom:15,minZoom:3,maxZoom:20,mapId:'DEMO_MAP_ID',disableDefaultUI:true,zoomControl:false,gestureHandling:'greedy',clickableIcons:false})};
+      retainedMap={surface,map:new G.Map(surface,{center:{lat:CENTER[0],lng:CENTER[1]},zoom:15,minZoom:3,maxZoom:20,mapId:'DEMO_MAP_ID',renderingType:'VECTOR',headingInteractionEnabled:true,tiltInteractionEnabled:true,disableDefaultUI:true,zoomControl:false,gestureHandling:'greedy',clickableIcons:false})};
     }else host.append(retainedMap.surface);
     const {map,surface}=retainedMap,markers=[],listeners=[];let dot,accuracy,searchMarker;
     map.setCenter({lat:CENTER[0],lng:CENTER[1]});map.setZoom(15);
@@ -149,7 +149,7 @@
   }
   function element(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text)e.textContent=text;return e;}
   function button(text,label,fn,className=''){const b=element('button',className,text);b.type='button';b.setAttribute('aria-label',label);b.onclick=fn;return b;}
-  async function open({launcher,point,onClose,signal,provider=googleProvider}={}){
+  async function open({launcher,point,onClose,signal,loadTestRecord,provider=googleProvider}={}){
     if(activeSession){activeSession.focus();return activeSession;}
     await load();
     if(signal?.aborted)throw new DOMException('Abertura cancelada.','AbortError');
@@ -167,18 +167,20 @@
     function drawCard(){
       shade.replaceChildren();shade.hidden=false;detail=false;const row=selected.rows[index],area=element('div','zmap-card-area');
       const size=document.querySelector('.desktop-catalog-grid > .bg-gray-900')?.getBoundingClientRect().width||140;
-      area.style.setProperty('--zmap-card-width',Math.round(size*.875)+'px');
+      area.style.setProperty('--zmap-card-width',size+'px');
       area.append(button('×','Fechar card demonstrativo',closeCard,'zmap-card-close'));
       const card=button('', 'Abrir detalhes de '+row.name,drawDetails,'zmap-card bg-gray-900 p-1 rounded cursor-pointer min-w-0 relative');
-      const photo=element('div','zmap-photo aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden'),img=element('img');img.src=row.image;img.alt='Retrato fictício de demonstração';img.decoding='async';photo.append(img);card.append(photo,element('p','text-center font-semibold text-xs leading-tight break-words',row.name),element('p','text-center text-xs text-gray-400 leading-tight break-words',row.vulgo));area.append(card);
-      area.append(element('p','zmap-card-note',row.precision==='aproximada'?'Exemplo de endereço aproximado':'Endereço fictício de demonstração'));
+      const photo=element('div','zmap-photo aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden'),img=element('img');if(row.image)img.src=row.image;img.alt=row.testRecord?'Foto do cadastro fictício':'Retrato fictício de demonstração';img.decoding='async';photo.append(img);card.append(photo,element('p','text-center font-semibold text-xs leading-tight break-words',row.name),element('p','text-center text-xs text-gray-400 leading-tight break-words',row.vulgo));area.append(card);
+      if(row.loadImage&&!row.image)Promise.resolve().then(row.loadImage).then(image=>{if(!disposed&&img.isConnected&&image){img.src=image;row.image=image;}}).catch(()=>{if(img.isConnected)img.alt='Foto indisponível';});
+      area.append(element('p','zmap-card-note',row.note||(row.precision==='aproximada'?'Exemplo de endereço aproximado':'Endereço fictício de demonstração')));
       if(selected.rows.length>1){const nav=element('div','zmap-card-nav');nav.append(button('‹','Cadastro anterior',()=>{index=(index+selected.rows.length-1)%selected.rows.length;drawCard();}),element('span','',(index+1)+' / '+selected.rows.length),button('›','Próximo cadastro',()=>{index=(index+1)%selected.rows.length;drawCard();}));area.append(nav);}
       shade.append(area);card.focus({preventScroll:true});
     }
     function drawDetails(){
       detail=true;shade.replaceChildren();const row=selected.rows[index],panel=element('div','zmap-demo-details mobile-panel bg-gray-900 rounded');
-      const back=button('×','Voltar ao card do mapa',drawCard,'zmap-close');panel.append(back);const img=element('img');img.src=row.image;img.alt='Foto fictícia';panel.append(img);
-      for(const [label,value]of [['Nome',row.name],['Vulgo',row.vulgo||'—'],['Endereço',row.address],['Descrição','Cadastro fictício, somente para testar a interface. Nenhuma informação foi salva no Zebrol.']]){const p=element('p'),b=element('b','',label+': ');p.append(b,document.createTextNode(value));panel.append(p);}panel.append(element('p','zmap-card-note','Demonstração · somente leitura'));shade.append(panel);back.focus({preventScroll:true});
+      const back=button('×','Voltar ao card do mapa',drawCard,'zmap-close');panel.append(back);const img=element('img');if(row.image)img.src=row.image;img.alt='Foto fictícia';panel.append(img);
+      if(row.loadImage&&!row.image)Promise.resolve().then(row.loadImage).then(image=>{if(!disposed&&img.isConnected&&image){img.src=image;row.image=image;}}).catch(()=>{if(img.isConnected)img.alt='Foto indisponível';});
+      for(const [label,value]of [['Nome',row.name],['Vulgo',row.vulgo||'—'],['Endereço',row.address],['Descrição',row.testRecord?'Cadastro fictício de teste no Firebase. O mapa não altera seus dados.':'Cadastro fictício, somente para testar a interface. Nenhuma informação foi salva no Zebrol.']]){const p=element('p'),b=element('b','',label+': ');p.append(b,document.createTextNode(value));panel.append(p);}panel.append(element('p','zmap-card-note','Demonstração · somente leitura'));shade.append(panel);back.focus({preventScroll:true});
     }
     shade.onclick=e=>{if(e.target===shade)closeCard();};
     function follow(){following=true;gps.setAttribute('aria-pressed','true');if(lastPoint)map.position(lastPoint,true);tracker.enable();}
@@ -213,6 +215,13 @@
       if(googleFailure)throw new Error(googleFailure);
       map=provider(root.google.maps,canvas,()=>{following=false;gps.setAttribute('aria-pressed','false');});
       for(const g of group(fixtures(),point))map.marker(g.point,g.rows.length,()=>{selected=g;index=0;drawCard();});
+      if(loadTestRecord)Promise.resolve().then(()=>loadTestRecord(signal)).then(row=>{
+        if(disposed||!row)return;
+        const p=point(row);
+        if(row.name!=='TESTE ENDEREÇO'||!row.testRecord||!p)throw new Error('Cadastro de teste inválido.');
+        map.marker(p,1,()=>{selected={point:p,rows:[row]};index=0;drawCard();});
+        status.textContent='TESTE ENDEREÇO carregado · '+row.note;
+      }).catch(error=>{if(!disposed&&error.name!=='AbortError')status.textContent=error.message;});
       tracker=gpsTracker({geo:navigator.geolocation,point,isVisible:()=>!disposed&&document.visibilityState==='visible',onStatus:text=>{status.textContent=text;gps.setAttribute('aria-pressed','false');},onPoint:p=>{lastPoint=p;map.position(p,following);gps.setAttribute('aria-pressed',String(following));status.textContent='Sua posição · precisão aproximada de '+Math.round(p.accuracy)+' m';}});
       document.addEventListener('visibilitychange',visibility);root.addEventListener('pagehide',pagehide);root.addEventListener('pageshow',pageshow);document.addEventListener('keydown',keys,true);
       signal?.addEventListener('abort',close,{once:true});

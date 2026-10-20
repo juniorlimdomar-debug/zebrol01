@@ -596,15 +596,45 @@ function loadMapDemo(){
   });
   return mapDemoModule;
 }
-function MapDemoButton(){
+function MapDemoButton({user}){
   const [loading,setLoading]=useState(false),[error,setError]=useState('');
   const button=useRef(null),operation=useRef(null);
+  const testCache=useRef(null);
+  const loadTestRecord=async signal=>{
+    if(!navigator.onLine)throw new Error('O teste do endereço precisa de internet.');
+    const account=auth.currentUser;
+    if(!account||account.uid!==user.authUid)throw new Error('Sessão alterada. Abra novamente o mapa.');
+    const snapshot=await db.collection('users').doc(dataOwner(user.uid)).collection('items')
+      .where('name','==','TESTE ENDEREÇO').limit(2).get({source:'server'});
+    if(signal.aborted)return null;
+    if(snapshot.empty)return null;
+    if(snapshot.size!==1)throw new Error('Existe mais de um TESTE ENDEREÇO. Nenhum foi mapeado.');
+    const doc=snapshot.docs[0],item={...doc.data(),id:doc.id};
+    if(item.name!=='TESTE ENDEREÇO'||(item.type&&item.type!=='person')||String(item.cpf||'').trim())
+      throw new Error('O teste exige nome TESTE ENDEREÇO e CPF vazio.');
+    const fingerprint=JSON.stringify([account.uid,item.id,item.address,item.latitude,item.longitude]);
+    let result=testCache.current?.fingerprint===fingerprint&&testCache.current.until>Date.now()?testCache.current.result:null;
+    if(!result){
+      const token=await account.getIdToken();
+      const response=await fetch('/api/map-test-record',{method:'POST',headers:{Authorization:'Bearer '+token},signal,cache:'no-store'});
+      const payload=await response.json();
+      if(!response.ok)throw new Error(payload.error||'Não foi possível consultar o teste.');
+      result=payload.record;
+      if(!result)return null;
+      if(result.id!==item.id)throw new Error('O cadastro mudou durante a consulta. Reabra o mapa.');
+      testCache.current={fingerprint,result,until:Date.now()+600000};
+    }
+    if(signal.aborted||auth.currentUser?.uid!==account.uid)return null;
+    return {id:item.id,name:item.name,vulgo:item.vulgo||'',address:item.address||'',
+      latitude:result.point.lat,longitude:result.point.lng,precision:result.approximate?'aproximada':'localizada',
+      note:result.note,testRecord:true,loadImage:()=>loadThumbnail(user.uid,item)};
+  };
   useEffect(()=>()=>{operation.current?.abort();},[]);
   const cancel=()=>{operation.current?.abort();operation.current=null;setLoading(false);setError('');};
   const open=async()=>{
     if(operation.current)return;
     const controller=new AbortController();operation.current=controller;setLoading(true);setError('');
-    try{const module=await loadMapDemo();if(controller.signal.aborted)return;await module.open({launcher:button.current,point:ZebrolLocation.point,signal:controller.signal,onClose:()=>{if(operation.current===controller)operation.current=null;}});}
+    try{const module=await loadMapDemo();if(controller.signal.aborted)return;await module.open({launcher:button.current,point:ZebrolLocation.point,signal:controller.signal,loadTestRecord,onClose:()=>{controller.abort();if(operation.current===controller)operation.current=null;}});}
     catch(e){if(!controller.signal.aborted){setError(e.message);operation.current=null;}}
     finally{if(!controller.signal.aborted)setLoading(false);}
   };
@@ -1349,7 +1379,7 @@ function App() {
       )}
 
       <section aria-labelledby="alerta-geral-heading" className="desktop-catalog mx-auto space-y-4">
-        <div className="relative w-full"><h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2><ServiceInformation key={user.uid} user={user} /><MapDemoButton key={user.authUid+'~map-demo'} /><Notifications key={user.uid+'~notifications'} user={user} items={items} onOpen={openDetails} onOpenGeneral={()=>setShowGeneral(true)} /></div>
+        <div className="relative w-full"><h2 id="alerta-geral-heading" className="text-xl font-bold text-center">ALERTA GERAL</h2><ServiceInformation key={user.uid} user={user} /><MapDemoButton user={user} key={user.authUid+'~map-demo'} /><Notifications key={user.uid+'~notifications'} user={user} items={items} onOpen={openDetails} onOpenGeneral={()=>setShowGeneral(true)} /></div>
         {!items.some(item => item.alertaGeral === true) && <p className="text-gray-400">Nenhuma pessoa em alerta geral</p>}
       <div className="desktop-catalog-grid grid gap-2 mx-auto">
         <GeneralVehiclesPreview user={user} search={search} onOpen={()=>setShowGeneral(true)} />
