@@ -2,7 +2,7 @@
   'use strict';
   // Google Maps preview: fictional records only; manual public street search, no Firestore or personal-record geocoding.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-address-35';
+  const REV='map-cohort-37';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -45,7 +45,7 @@
   function load(){
     if(navigator.onLine===false)return Promise.reject(new Error('Conecte-se à internet para abrir o Google Maps. Os cadastros offline continuam disponíveis.'));
     if(!assets)assets=Promise.all([asset('link','zebrol-map.css'),
-      asset('script','lib/map-address.js').then(()=>asset('script','lib/map-fixtures.js'))])
+      asset('script','lib/map-address.js').then(()=>asset('script','lib/map-fixtures.js').then(()=>asset('script','map-demo-records.js')))])
       .catch(error=>{assets=null;throw error;});
     return Promise.all([assets,loadGoogle()]);
   }
@@ -63,9 +63,9 @@
     ].map(row=>({...row,synthetic:true}));
   }
   const inside=p=>p&&p.latitude>=BOUNDS[0][0]&&p.latitude<=BOUNDS[1][0]&&p.longitude>=BOUNDS[0][1]&&p.longitude<=BOUNDS[1][1];
-  function group(records,point){
+  function group(records,point,validated=false){
     const groups=new Map();
-    for(const row of records){const p=point(row);if(!p||!inside(p)||row.precision==='bairro')continue;const key=p.latitude.toFixed(6)+','+p.longitude.toFixed(6);if(!groups.has(key))groups.set(key,{point:p,rows:[]});groups.get(key).rows.push(row);}
+    for(const row of records){const p=point(row);if(!p||(!validated&&!inside(p))||row.precision==='bairro')continue;const key=p.latitude.toFixed(6)+','+p.longitude.toFixed(6);if(!groups.has(key))groups.set(key,{point:p,rows:[]});groups.get(key).rows.push(row);}
     return [...groups.values()];
   }
   function gpsTracker({geo,point,onPoint,onStatus,isVisible}){
@@ -158,7 +158,8 @@
     const caption=element('p','zmap-caption','Endereços fictícios · demonstração');
     const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('p','zmap-status','Toque em 🥷 para testar os cards. GPS somente se você ativar.');status.setAttribute('role','status');
     const shade=element('div','zmap-shade');shade.hidden=true;stage.append(canvas,shade);
-    let disposed=false,following=true,lastPoint=null,selected=null,index=0,tracker,map,observer,stopTest,testMarker;
+    let disposed=false,following=true,lastPoint=null,selected=null,index=0,tracker,map,observer,stopTest;
+    const testRows=new Map(),testMarkers=[];
     const fixtureProcessor=root.ZebrolMapFixtures.processor();
     const oldOverflow=document.body.style.overflow;
     function closeCard(){shade.hidden=true;shade.replaceChildren();selected=null;}
@@ -212,16 +213,15 @@
       const examples=fixtures(),prepared=await fixtureProcessor.update(examples),ready=new Set(prepared.filter(row=>row.status==='ready').map(row=>row.id));
       if(disposed||signal?.aborted){close();throw new DOMException('Abertura cancelada.','AbortError');}
       for(const g of group(examples.filter(row=>ready.has(row.id)),point))map.marker(g.point,g.rows.length,()=>{selected=g;index=0;drawCard();});
-      if(watchTestRecord)stopTest=watchTestRecord({signal,onChange:row=>{
+      if(watchTestRecord)stopTest=watchTestRecord({signal,onChange:(row,id)=>{
         if(disposed)return;
-        testMarker?.remove();testMarker=null;
-        if(selected?.rows.some(item=>item.testRecord))closeCard();
-        if(!row){status.textContent='Sem localização ativa para TESTE ENDEREÇO.';return;}
-        const p=point(row);
-        if(row.name!=='TESTE ENDEREÇO'||!row.testRecord||!p){status.textContent='Cadastro de teste inválido.';return;}
-        testMarker=map.marker(p,1,()=>{selected={point:p,rows:[row]};index=0;drawCard();});
-        status.textContent='TESTE ENDEREÇO carregado · '+row.note;
-      },onError:error=>{if(!disposed&&error.name!=='AbortError')status.textContent=error.message;}});
+        id=id||row?.id;
+        if(id)testRows.delete(id);else testRows.clear();
+        if(selected?.rows.some(item=>item.id===id))closeCard();
+        if(row?.testRecord&&point(row))testRows.set(row.id,row);
+        for(const marker of testMarkers)marker.remove();testMarkers.length=0;
+        for(const g of group([...testRows.values()],point,true))testMarkers.push(map.marker(g.point,g.rows.length,()=>{selected=g;index=0;drawCard();}));
+      },onStatus:text=>{if(!disposed)status.textContent=text;},onError:error=>{if(!disposed&&error.name!=='AbortError')status.textContent=error.message;}});
       tracker=gpsTracker({geo:navigator.geolocation,point,isVisible:()=>!disposed&&document.visibilityState==='visible',onStatus:text=>{status.textContent=text;gps.setAttribute('aria-pressed','false');},onPoint:p=>{lastPoint=p;map.position(p,following);gps.setAttribute('aria-pressed',String(following));status.textContent='Sua posição · precisão aproximada de '+Math.round(p.accuracy)+' m';}});
       document.addEventListener('visibilitychange',visibility);root.addEventListener('pagehide',pagehide);root.addEventListener('pageshow',pageshow);document.addEventListener('keydown',keys,true);
       signal?.addEventListener('abort',close,{once:true});

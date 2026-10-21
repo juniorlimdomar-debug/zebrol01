@@ -3,6 +3,7 @@
 const crypto=require('node:crypto');
 const addresses=require('../lib/map-address.js');
 const locationCache=require('../lib/map-location-cache.js');
+const demoSet=require('../lib/map-demo-set.js');
 const OWNER='1Cmku6frFfWYhMfOUhGUTNffkGu1',PROJECT='zebrol',NAME='TESTE ENDEREÇO';
 const ROOT=`https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 let certificates,certificatesUntil=0;
@@ -43,7 +44,15 @@ function street(value){
   return addresses.parse(value)?.query||null;
 }
 function value(field){return field?.stringValue??field?.doubleValue??field?.integerValue;}
-async function record(token){
+async function record(token,member){
+  if(member){
+    const response=await fetch(`${ROOT}/users/${OWNER}/items/${encodeURIComponent(member.id)}`,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(10000)});
+    if(response.status===404)return null;
+    if(!response.ok)throw fail(response.status===403?403:503,'Não foi possível conferir o cadastro autorizado.');
+    const doc=await response.json();
+    if(doc.createTime!==member.createdAt)throw fail(409,'Cadastro recriado depois da seleção; não incluído no teste.');
+    return parseRecord(doc,true);
+  }
   const {data}=await json(`${ROOT}/users/${OWNER}:runQuery`,{
     method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     body:JSON.stringify({structuredQuery:{from:[{collectionId:'items'}],
@@ -53,8 +62,11 @@ async function record(token){
   const rows=data.filter(row=>row.document).map(row=>row.document);
   if(!rows.length)return null;
   if(rows.length!==1)throw fail(409,'Existe mais de um TESTE ENDEREÇO. O mapa não escolheu nenhum.');
-  const doc=rows[0],f=doc.fields||{};
-  if(value(f.name)!==NAME||(value(f.type)&&value(f.type)!=='person')||String(value(f.cpf)||'').trim())
+  return parseRecord(rows[0],false);
+}
+function parseRecord(doc,cohort){
+  const f=doc.fields||{};
+  if((value(f.type)&&value(f.type)!=='person')||(!cohort&&(value(f.name)!==NAME||String(value(f.cpf)||'').trim())))
     throw fail(409,'O teste exige pessoa com nome TESTE ENDEREÇO e CPF vazio.');
   const address=street(value(f.address));
   if(!address)throw fail(422,'Informe uma rua no cadastro TESTE ENDEREÇO; somente bairro não é suficiente.');
@@ -92,12 +104,22 @@ async function handler(req,res){
     if(process.env.VERCEL_ENV!=='preview')throw fail(403,'Recurso disponível somente na prévia.');
     const bearer=req.headers.authorization||'';
     if(!bearer.startsWith('Bearer '))throw fail(401,'Entre no Zebrol para testar o mapa.');
-    const token=bearer.slice(7),uid=await authenticate(token),row=await record(token);
+    const token=bearer.slice(7),uid=await authenticate(token);
+    const body=typeof req.body==='string'?JSON.parse(req.body):req.body||{};
+    let member;
+    if(body.id!==undefined){
+      if(typeof body.id!=='string'||body.id.length>150||body.id.includes('/'))throw fail(400,'Identificador inválido.');
+      const set=await demoSet.load({json,root:ROOT,owner:OWNER,uid,token});
+      member=set.members.find(x=>x.id===body.id);
+      if(!member)throw fail(403,'Cadastro fora do conjunto fictício autorizado.');
+    }
+    const row=await record(token,member);
     if(!row)return res.status(200).json({record:null});
     // Always validate current authorization and the unique current record BEFORE reuse.
     cache=locationCache.create(json,row);
     const cached=await cache.read();
     if(cached)return res.status(200).json({record:cached});
+    if(body.cacheOnly===true)return res.status(200).json({record:null,needsLookup:true});
     locked=await cache.lock();
     if(!locked)throw fail(503,'A localização já está sendo consultada. Aguarde alguns segundos e reabra o mapa.');
     const completed=await cache.read();
@@ -131,4 +153,4 @@ async function handler(req,res){
   }finally{if(locked)await cache.release().catch(()=>{});}
 }
 module.exports=handler;
-module.exports._test={street,accepted,record,quota,authenticate};
+module.exports._test={street,accepted,record,quota,authenticate,json,ROOT,OWNER};

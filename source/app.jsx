@@ -589,7 +589,7 @@ let mapDemoModule;
 function loadMapDemo(){
   if(window.ZebrolMapPhase1)return Promise.resolve(window.ZebrolMapPhase1);
   if(!mapDemoModule)mapDemoModule=new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-1';
+    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-37';
     const timer=setTimeout(()=>fail(),15000);
     function fail(){clearTimeout(timer);script.remove();mapDemoModule=null;reject(new Error('Não foi possível carregar o mapa. Confira a conexão e tente novamente.'));}
     script.onerror=fail;script.onload=()=>{clearTimeout(timer);if(window.ZebrolMapPhase1)resolve(window.ZebrolMapPhase1);else fail();};document.head.appendChild(script);
@@ -599,57 +599,33 @@ function loadMapDemo(){
 function MapDemoButton({user}){
   const [loading,setLoading]=useState(false),[error,setError]=useState('');
   const button=useRef(null),operation=useRef(null);
-  const testCache=useRef(null);
-  const loadTestRecord=async (signal,item)=>{
-    if(!navigator.onLine)throw new Error('O teste do endereço precisa de internet.');
-    const account=auth.currentUser;
-    if(!account||account.uid!==user.authUid)throw new Error('Sessão alterada. Abra novamente o mapa.');
-    if(item.name!=='TESTE ENDEREÇO'||(item.type&&item.type!=='person')||String(item.cpf||'').trim())
-      throw new Error('O teste exige nome TESTE ENDEREÇO e CPF vazio.');
-    const parsed=window.ZebrolMapAddress.parse(item.address);
-    if(!parsed)throw new Error('Endereço incompleto ou inválido. Nenhum ponto foi mantido.');
-    const coordinates=ZebrolLocation.point(item);
-    const inputKey=JSON.stringify([item.id,parsed.query,coordinates?{lat:coordinates.latitude,lng:coordinates.longitude}:null]);
-    const fingerprint=JSON.stringify([account.uid,item.id,item.address,item.latitude,item.longitude]);
-    let result=testCache.current?.fingerprint===fingerprint&&testCache.current.until>Date.now()?testCache.current.result:null;
-    if(!result){
-      const token=await account.getIdToken();
-      const response=await fetch('/api/map-test-record',{method:'POST',headers:{Authorization:'Bearer '+token},signal,cache:'no-store'});
-      const payload=await response.json();
-      if(!response.ok)throw new Error(payload.error||'Não foi possível consultar o teste.');
-      result=payload.record;
-      if(!result)return null;
-      if(result.id!==item.id||result.inputKey!==inputKey)throw new Error('O endereço mudou durante a consulta. Aguarde a atualização do cadastro.');
-      if(signal.aborted)return null;
-      testCache.current={fingerprint,result,until:Date.now()+600000};
-    }
-    if(signal.aborted||auth.currentUser?.uid!==account.uid)return null;
-    return {id:item.id,name:item.name,vulgo:item.vulgo||'',address:item.address||'',
-      latitude:result.point.lat,longitude:result.point.lng,precision:result.approximate?'aproximada':'localizada',
-      note:result.note,testRecord:true,loadImage:()=>loadThumbnail(user.uid,item)};
-  };
-  const watchTestRecord=({signal,onChange,onError})=>{
-    let stopped=false,epoch=0,request,timer,lastSnapshot;
-    const invalidate=()=>{epoch++;clearTimeout(timer);request?.abort();request=null;onChange(null);};
-    const unsubscribe=db.collection('users').doc(dataOwner(user.uid)).collection('items')
-      .where('name','==','TESTE ENDEREÇO').limit(2).onSnapshot({includeMetadataChanges:true},snapshot=>{
-        if(stopped)return;
-        if(snapshot.metadata.fromCache||snapshot.metadata.hasPendingWrites){invalidate();lastSnapshot=null;return;}
-        if(snapshot.empty){invalidate();lastSnapshot=null;testCache.current=null;return;}
-        if(snapshot.size!==1){invalidate();lastSnapshot=null;testCache.current=null;onError(new Error('Existe mais de um TESTE ENDEREÇO. Nenhum foi mapeado.'));return;}
-        const doc=snapshot.docs[0],item={...doc.data(),id:doc.id};
-        if(testCache.current?.fingerprint!==JSON.stringify([user.authUid,item.id,item.address,item.latitude,item.longitude]))testCache.current=null;
-        const signature=JSON.stringify([item.id,item.name,item.type,item.cpf,item.address,item.latitude,item.longitude,item.vulgo,item.photoVersion,item.hasPhoto]);
-        if(signature===lastSnapshot)return;
-        lastSnapshot=signature;invalidate();const version=epoch;
-        timer=setTimeout(async()=>{
-          request=new AbortController();
-          try{const row=await loadTestRecord(request.signal,item);if(!stopped&&version===epoch)onChange(row);}
-          catch(error){if(!stopped&&version===epoch&&error.name!=='AbortError')onError(error);}
-        },300);
-      },error=>{if(!stopped){invalidate();testCache.current=null;onError(error);}});
-    const stop=()=>{if(stopped)return;stopped=true;epoch++;clearTimeout(timer);request?.abort();unsubscribe();signal?.removeEventListener('abort',stop);};
+  const watchTestRecord=({signal,onChange,onError,onStatus})=>{
+    let stopped=false,unsubscribe;
+    const controller=new AbortController();
+    const stop=()=>{if(stopped)return;stopped=true;controller.abort();unsubscribe?.();signal?.removeEventListener('abort',stop);};
     signal?.addEventListener('abort',stop,{once:true});if(signal?.aborted)stop();
+    const request=async(url,body,requestSignal)=>{
+      const account=auth.currentUser;
+      if(!account||account.uid!==user.authUid)throw new Error('Sessão alterada. Reabra o mapa.');
+      if(!navigator.onLine)throw new Error('O mapa de demonstração precisa de internet.');
+      const token=await account.getIdToken();
+      const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store',signal:requestSignal});
+      const payload=await response.json();
+      if(!response.ok)throw Object.assign(new Error(payload.error||'Não foi possível consultar o conjunto fictício.'),{status:response.status});
+      if(auth.currentUser?.uid!==account.uid)throw new Error('Sessão alterada.');
+      return payload;
+    };
+    (async()=>{
+      try{
+        const set=await request('/api/map-demo-set',{},controller.signal);if(stopped)return;
+        if(!Array.isArray(set.ids)||set.ids.length>300||new Set(set.ids).size!==set.ids.length)throw new Error('Conjunto inválido.');
+        unsubscribe=window.ZebrolMapDemoRecords.watch({ids:set.ids,signal:controller.signal,
+          subscribe:(ids,next,error)=>db.collection('users').doc(dataOwner(user.uid)).collection('items')
+            .where(firebase.firestore.FieldPath.documentId(),'in',ids).onSnapshot({includeMetadataChanges:true},next,error),
+          request:(body,signal)=>request('/api/map-test-record',body,signal),parse:window.ZebrolMapAddress.parse,point:ZebrolLocation.point,
+          loadImage:item=>loadThumbnail(user.uid,item),onChange,onError,onStatus});
+      }catch(e){if(!stopped&&e.name!=='AbortError')onError(e);}
+    })();
     return stop;
   };
   useEffect(()=>()=>{operation.current?.abort();},[]);
