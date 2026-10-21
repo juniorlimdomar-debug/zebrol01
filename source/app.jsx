@@ -589,7 +589,7 @@ let mapDemoModule;
 function loadMapDemo(){
   if(window.ZebrolMapPhase1)return Promise.resolve(window.ZebrolMapPhase1);
   if(!mapDemoModule)mapDemoModule=new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-38';
+    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-39';
     const timer=setTimeout(()=>fail(),15000);
     function fail(){clearTimeout(timer);script.remove();mapDemoModule=null;reject(new Error('Não foi possível carregar o mapa. Confira a conexão e tente novamente.'));}
     script.onerror=fail;script.onload=()=>{clearTimeout(timer);if(window.ZebrolMapPhase1)resolve(window.ZebrolMapPhase1);else fail();};document.head.appendChild(script);

@@ -13,26 +13,28 @@
    c.remainingAddresses=distinct.size;c.repeatedAddresses=remaining-distinct.size;
    onStatus?.('Total '+c.total+' · Com endereço utilizável '+c.usable+' · Sem endereço utilizável '+c.unusable+' · Localizados '+c.located+' · Aguardando localização '+c.pending+' · Com erro '+c.error+
     (c.loading?' · Aguardando dados '+c.loading:'')+(c.removed?' · Excluídos '+c.removed:'')+' · Endereços distintos restantes '+distinct.size+' (estimativa, não confirmação geográfica).'+
-    (waiting.size||queue.size?' Verificando cache, sem Google.':blocked?' Novas consultas limitadas; cache preservado.':newLookups>=3?' Até 3 novas tentativas por abertura.':'')+(lastError?' '+lastError:''),c);
+    (waiting.size||queue.size?' Verificando cache, sem Google.':blocked?' Novas consultas limitadas; cache preservado.':newLookups>=10?' Até 10 novas tentativas por abertura.':'')+(lastError?' '+lastError:''),c);
   }
   function remove(id,loading=false){const previous=states.get(id);states.set(id,{version:(previous?.version||0)+1,loading,removed:!loading});queue.delete(id);pending.delete(id);if(activeId===id)active?.abort();onChange(null,id);}
   async function pump(){
    if(stopped||running)return;running=true;
    try{while(!stopped){
     const cachePhase=queue.size>0;
-    if(!cachePhase&&(waiting.size||!pending.size||blocked||newLookups>=3))break;
+    if(!cachePhase&&(waiting.size||!pending.size||blocked||newLookups>=10))break;
     const tasks=cachePhase?queue:pending,[id,job]=tasks.entries().next().value;tasks.delete(id);activeId=id;active=new AbortController();
     const current=()=>!stopped&&states.get(id)?.version===job.version&&!active.signal.aborted;
     try{
      let data=await request({id,cacheOnly:true},active.signal);if(!current())continue;
+     if(data.rejected){states.get(id).error=true;lastError='Endereço rejeitado anteriormente; nova tentativa após '+new Date(data.retryAt).toLocaleString('pt-BR')+'. Corrigir o endereço permite nova avaliação.';continue;}
      const attemptKey=job.key;
      if(data.needsLookup&&cachePhase){pending.set(id,job);continue;}
-     if(data.needsLookup&&!blocked&&newLookups<3&&!(attempts.get(attemptKey)>Date.now())){
+     if(data.needsLookup&&!blocked&&newLookups<10&&!(attempts.get(attemptKey)>Date.now())){
       newLookups++;attempts.set(attemptKey,Date.now()+600000);
       for(const [key,until] of attempts)if(until<=Date.now())attempts.delete(key);
       if(attempts.size>600)attempts.delete(attempts.keys().next().value);
       data=await request({id},active.signal);if(!current())continue;
      }
+     if(data.rejected){states.get(id).error=true;status();continue;}
      const result=data.record;if(!result){status();continue;}
      const coordinates=point(job.item),inputKey=JSON.stringify([id,parse(job.item.address).query,coordinates?{lat:coordinates.latitude,lng:coordinates.longitude}:null]);
      if(result.id!==id||result.inputKey!==inputKey)throw Error('Endereço alterado durante a consulta; posição descartada.');

@@ -84,7 +84,7 @@ async function quota(uid){
   // Atomic global + per-user daily limits, shared across serverless instances.
   const day=new Date().toISOString().slice(0,10);
   const hash=crypto.createHash('sha256').update(uid).digest('hex');
-  const script="local a=tonumber(redis.call('GET',KEYS[1]) or '0'); local b=tonumber(redis.call('GET',KEYS[2]) or '0'); if a>=50 or b>=5 then return 0 end; redis.call('INCR',KEYS[1]); redis.call('EXPIRE',KEYS[1],172800); redis.call('INCR',KEYS[2]); redis.call('EXPIRE',KEYS[2],172800); return 1";
+  const script="local a=tonumber(redis.call('GET',KEYS[1]) or '0'); local b=tonumber(redis.call('GET',KEYS[2]) or '0'); if a>=60 or b>=50 then return 0 end; redis.call('INCR',KEYS[1]); redis.call('EXPIRE',KEYS[1],172800); redis.call('INCR',KEYS[2]); redis.call('EXPIRE',KEYS[2],172800); return 1";
   const {data}=await json(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     body:JSON.stringify(['EVAL',script,2,'zebrol:test-map:global:'+day,'zebrol:test-map:'+hash+':'+day])});
   if(data.error||![0,1].includes(data.result))throw fail(503,'Não foi possível validar o limite de consultas. Tente novamente mais tarde.');
@@ -119,11 +119,15 @@ async function handler(req,res){
     cache=locationCache.create(json,row);
     const cached=await cache.read();
     if(cached)return res.status(200).json({record:cached});
+    const retryAt=await cache.readRejected();
+    if(retryAt)return res.status(200).json({record:null,rejected:true,retryAt});
     if(body.cacheOnly===true)return res.status(200).json({record:null,needsLookup:true});
     locked=await cache.lock();
     if(!locked)throw fail(503,'A localização já está sendo consultada. Aguarde alguns segundos e reabra o mapa.');
     const completed=await cache.read();
     if(completed)return res.status(200).json({record:completed});
+    const rejectedAfterLock=await cache.readRejected();
+    if(rejectedAfterLock)return res.status(200).json({record:null,rejected:true,retryAt:rejectedAfterLock});
     const key=process.env.GOOGLE_GEOCODING_API_KEY;
     if(!key)throw fail(503,'GOOGLE_GEOCODING_API_KEY ainda não está disponível nesta prévia.');
     await quota(uid);
@@ -149,6 +153,7 @@ async function handler(req,res){
     return res.status(200).json({record:await cache.write({id:row.id,inputKey:row.inputKey,point,source:'google',
       approximate,note:approximate?'Localização aproximada do endereço':'Endereço localizado pelo Google; confira a posição'})});
   }catch(error){
+    if(locked&&lookupAttempted&&error.status===422)await cache.writeRejected().catch(()=>{});
     if(error.retryAt)res.setHeader('Retry-After',String(Math.max(1,Math.ceil((Date.parse(error.retryAt)-Date.now())/1000))));
     return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.',lookupAttempted,...(error.retryAt?{retryAt:error.retryAt}:{})});
   }finally{if(locked)await cache.release().catch(()=>{});}
