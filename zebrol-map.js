@@ -2,7 +2,7 @@
   'use strict';
   // Google Maps preview: fictional records only; manual public street search, no Firestore or personal-record geocoding.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-cohort-37';
+  const REV='map-diagnostic-38';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -155,8 +155,8 @@
     if(activeSession){activeSession.focus();return activeSession;}
     const overlay=element('section','zmap-overlay');overlay.setAttribute('role','dialog');overlay.setAttribute('aria-modal','true');overlay.setAttribute('aria-label','Mapa demonstrativo');
     const controls=element('div','zmap-controls');
-    const caption=element('p','zmap-caption','Endereços fictícios · demonstração');
-    const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('p','zmap-status','Toque em 🥷 para testar os cards. GPS somente se você ativar.');status.setAttribute('role','status');
+    const caption=element('p','zmap-caption','3 marcadores ilustrativos + cadastros fictícios');
+    const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('details','zmap-status'),statusTitle=element('summary','','Diagnóstico dos cadastros'),statusBody=element('p','','Toque em 🥷 para testar os cards. GPS somente se você ativar.');status.append(statusTitle,statusBody);status.style.pointerEvents='auto';statusBody.style.maxHeight='30vh';statusBody.style.overflowY='auto';
     const shade=element('div','zmap-shade');shade.hidden=true;stage.append(canvas,shade);
     let disposed=false,following=true,lastPoint=null,selected=null,index=0,tracker,map,observer,stopTest;
     const testRows=new Map(),testMarkers=[];
@@ -201,8 +201,8 @@
     };
     overlay.append(stage,caption,controls,searchToggle,search,tools,status);document.body.append(overlay);document.body.style.overflow='hidden';
     activeSession={close,focus:()=>exit.focus({preventScroll:true})};
-    function authError(){tracker?.dispose();map?.clearPosition();status.textContent=googleFailure||authMessage;}
-    function visibility(){tracker.visibility();if(document.visibilityState!=='visible'){lastPoint=null;map.clearPosition();status.textContent='GPS pausado enquanto o aplicativo está em segundo plano.';}else map.resize();}
+    function authError(){tracker?.dispose();map?.clearPosition();statusBody.textContent=googleFailure||authMessage;}
+    function visibility(){tracker.visibility();if(document.visibilityState!=='visible'){lastPoint=null;map.clearPosition();statusBody.textContent='GPS pausado enquanto o aplicativo está em segundo plano.';}else map.resize();}
     function pagehide(){tracker.dispose();lastPoint=null;map.clearPosition();}
     function pageshow(event){if(event.persisted)close();}
     function keys(e){if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(!shade.hidden)closeCard();else if(!search.hidden){search.hidden=true;searchToggle.setAttribute('aria-expanded','false');searchToggle.focus();}else close();}if(e.key==='Tab'){const scope=shade.hidden?overlay:shade;const list=[...scope.querySelectorAll('button,input,a,[tabindex="0"]')].filter(el=>!el.disabled&&!el.closest('[hidden]'));if(!list.length)return;const first=list[0],last=list.at(-1);if(e.shiftKey&&(document.activeElement===first||!scope.contains(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&(document.activeElement===last||!scope.contains(document.activeElement))){e.preventDefault();first.focus();}}}
@@ -221,8 +221,8 @@
         if(row?.testRecord&&point(row))testRows.set(row.id,row);
         for(const marker of testMarkers)marker.remove();testMarkers.length=0;
         for(const g of group([...testRows.values()],point,true))testMarkers.push(map.marker(g.point,g.rows.length,()=>{selected=g;index=0;drawCard();}));
-      },onStatus:text=>{if(!disposed)status.textContent=text;},onError:error=>{if(!disposed&&error.name!=='AbortError')status.textContent=error.message;}});
-      tracker=gpsTracker({geo:navigator.geolocation,point,isVisible:()=>!disposed&&document.visibilityState==='visible',onStatus:text=>{status.textContent=text;gps.setAttribute('aria-pressed','false');},onPoint:p=>{lastPoint=p;map.position(p,following);gps.setAttribute('aria-pressed',String(following));status.textContent='Sua posição · precisão aproximada de '+Math.round(p.accuracy)+' m';}});
+      },onStatus:(text,counts)=>{if(!disposed){statusBody.textContent=text;if(counts)statusTitle.textContent=counts.located+' localizados · '+counts.pending+' aguardando · Diagnóstico';}},onError:error=>{if(!disposed&&error.name!=='AbortError')statusBody.textContent=error.message;}});
+      tracker=gpsTracker({geo:navigator.geolocation,point,isVisible:()=>!disposed&&document.visibilityState==='visible',onStatus:text=>{statusBody.textContent=text;gps.setAttribute('aria-pressed','false');},onPoint:p=>{lastPoint=p;map.position(p,following);gps.setAttribute('aria-pressed',String(following));statusBody.textContent='Sua posição · precisão aproximada de '+Math.round(p.accuracy)+' m';}});
       document.addEventListener('visibilitychange',visibility);root.addEventListener('pagehide',pagehide);root.addEventListener('pageshow',pageshow);document.addEventListener('keydown',keys,true);
       signal?.addEventListener('abort',close,{once:true});
       if(root.ResizeObserver){observer=new ResizeObserver(()=>map.resize());observer.observe(stage);}

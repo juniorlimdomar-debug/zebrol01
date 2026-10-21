@@ -97,7 +97,7 @@ function accepted(row){
   return addresses.municipal(row);
 }
 async function handler(req,res){
-  let cache,locked=false;
+  let cache,locked=false,lookupAttempted=false;
   res.setHeader('Cache-Control','no-store');
   if(req.method!=='POST'){res.setHeader('Allow','POST');return res.status(405).json({error:'Método não permitido.'});}
   try{
@@ -131,6 +131,7 @@ async function handler(req,res){
     const query=new URLSearchParams(row.point?{latlng:row.point.lat+','+row.point.lng,language:'pt-BR',key}:
       {address:row.address+', Altamira, Pará, Brasil',
       components:'country:BR|administrative_area:PA|locality:Altamira',language:'pt-BR',key});
+    lookupAttempted=true;
     const {data}=await json('https://maps.googleapis.com/maps/api/geocode/json?'+query);
     if(data.status==='ZERO_RESULTS')throw fail(422,'O Google não encontrou esse endereço. Nenhuma coordenada foi criada.');
     if(data.status!=='OK')throw fail(503,'O Google não autorizou ou não concluiu a consulta do endereço.');
@@ -149,7 +150,7 @@ async function handler(req,res){
       approximate,note:approximate?'Localização aproximada do endereço':'Endereço localizado pelo Google; confira a posição'})});
   }catch(error){
     if(error.retryAt)res.setHeader('Retry-After',String(Math.max(1,Math.ceil((Date.parse(error.retryAt)-Date.now())/1000))));
-    return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.',...(error.retryAt?{retryAt:error.retryAt}:{})});
+    return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.',lookupAttempted,...(error.retryAt?{retryAt:error.retryAt}:{})});
   }finally{if(locked)await cache.release().catch(()=>{});}
 }
 module.exports=handler;
