@@ -2,6 +2,7 @@
 // Preview-only, read-only endpoint. Never accepts a record ID or an address.
 const crypto=require('node:crypto');
 const addresses=require('../lib/map-address.js');
+const locationCache=require('../lib/map-location-cache.js');
 const OWNER='1Cmku6frFfWYhMfOUhGUTNffkGu1',PROJECT='zebrol',NAME='TESTE ENDEREÇO';
 const ROOT=`https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 let certificates,certificatesUntil=0;
@@ -74,12 +75,17 @@ async function quota(uid){
   const script="local a=tonumber(redis.call('GET',KEYS[1]) or '0'); local b=tonumber(redis.call('GET',KEYS[2]) or '0'); if a>=50 or b>=5 then return 0 end; redis.call('INCR',KEYS[1]); redis.call('EXPIRE',KEYS[1],172800); redis.call('INCR',KEYS[2]); redis.call('EXPIRE',KEYS[2],172800); return 1";
   const {data}=await json(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     body:JSON.stringify(['EVAL',script,2,'zebrol:test-map:global:'+day,'zebrol:test-map:'+hash+':'+day])});
-  if(data.result!==1)throw fail(429,'Limite de consultas do teste atingido. Tente em outro dia.');
+  if(data.error||![0,1].includes(data.result))throw fail(503,'Não foi possível validar o limite de consultas. Tente novamente mais tarde.');
+  if(data.result!==1){
+    const next=new Date();next.setUTCHours(24,0,0,0);
+    throw Object.assign(fail(429,'Limite diário de novas consultas atingido. Nova tentativa após '+next.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (horário de Brasília).'),{retryAt:next.toISOString()});
+  }
 }
 function accepted(row){
   return addresses.municipal(row);
 }
 async function handler(req,res){
+  let cache,locked=false;
   res.setHeader('Cache-Control','no-store');
   if(req.method!=='POST'){res.setHeader('Allow','POST');return res.status(405).json({error:'Método não permitido.'});}
   try{
@@ -88,6 +94,14 @@ async function handler(req,res){
     if(!bearer.startsWith('Bearer '))throw fail(401,'Entre no Zebrol para testar o mapa.');
     const token=bearer.slice(7),uid=await authenticate(token),row=await record(token);
     if(!row)return res.status(200).json({record:null});
+    // Always validate current authorization and the unique current record BEFORE reuse.
+    cache=locationCache.create(json,row);
+    const cached=await cache.read();
+    if(cached)return res.status(200).json({record:cached});
+    locked=await cache.lock();
+    if(!locked)throw fail(503,'A localização já está sendo consultada. Aguarde alguns segundos e reabra o mapa.');
+    const completed=await cache.read();
+    if(completed)return res.status(200).json({record:completed});
     const key=process.env.GOOGLE_GEOCODING_API_KEY;
     if(!key)throw fail(503,'GOOGLE_GEOCODING_API_KEY ainda não está disponível nesta prévia.');
     await quota(uid);
@@ -99,19 +113,22 @@ async function handler(req,res){
     if(data.status==='ZERO_RESULTS')throw fail(422,'O Google não encontrou esse endereço. Nenhuma coordenada foi criada.');
     if(data.status!=='OK')throw fail(503,'O Google não autorizou ou não concluiu a consulta do endereço.');
     const parsed=addresses.parse(row.address);
-    const matches=(data.results||[]).filter(result=>row.point?accepted(result):addresses.quality(result,parsed));
+    const matches=(data.results||[]).filter(result=>addresses.quality(result,parsed));
     if(row.point){
       if(!matches.length)throw fail(422,'As coordenadas existentes não foram confirmadas em Altamira–PA.');
-      return res.status(200).json({record:{id:row.id,inputKey:row.inputKey,point:row.point,source:'existing',approximate:true,
-        note:'Coordenadas do cadastro; município confirmado. Confira a posição no mapa.'}});
+      return res.status(200).json({record:await cache.write({id:row.id,inputKey:row.inputKey,point:row.point,source:'existing',approximate:true,
+        note:'Coordenadas do cadastro; endereço e município confirmados. Confira a posição no mapa.'})});
     }
     if(matches.length!==1)throw fail(422,'Endereço ambíguo ou fora de Altamira–PA. Confira o cadastro.');
     const result=matches[0],point=result.geometry?.location;
-    if(!point||!Number.isFinite(point.lat)||!Number.isFinite(point.lng))throw fail(422,'Localização inválida.');
+    if(!point||!Number.isFinite(point.lat)||!Number.isFinite(point.lng)||Math.abs(point.lat)>90||Math.abs(point.lng)>180)throw fail(422,'Localização inválida.');
     const approximate=addresses.quality(result,parsed).approximate;
-    return res.status(200).json({record:{id:row.id,inputKey:row.inputKey,point,source:'google',
-      approximate,note:approximate?'Localização aproximada do endereço':'Endereço localizado pelo Google; confira a posição'}});
-  }catch(error){return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.'});}
+    return res.status(200).json({record:await cache.write({id:row.id,inputKey:row.inputKey,point,source:'google',
+      approximate,note:approximate?'Localização aproximada do endereço':'Endereço localizado pelo Google; confira a posição'})});
+  }catch(error){
+    if(error.retryAt)res.setHeader('Retry-After',String(Math.max(1,Math.ceil((Date.parse(error.retryAt)-Date.now())/1000))));
+    return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.',...(error.retryAt?{retryAt:error.retryAt}:{})});
+  }finally{if(locked)await cache.release().catch(()=>{});}
 }
 module.exports=handler;
 module.exports._test={street,accepted,record,quota,authenticate};
