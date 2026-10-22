@@ -2,7 +2,7 @@
   'use strict';
   // Google Maps preview: fictional records only; manual public street search, no Firestore or personal-record geocoding.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-batch-40';
+  const REV='map-info-42';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -156,10 +156,38 @@
     const overlay=element('section','zmap-overlay');overlay.setAttribute('role','dialog');overlay.setAttribute('aria-modal','true');overlay.setAttribute('aria-label','Mapa demonstrativo');
     const controls=element('div','zmap-controls');
     const caption=element('p','zmap-caption','Cadastros fictícios autorizados');
-    const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('details','zmap-status'),statusTitle=element('summary','','Diagnóstico dos cadastros'),statusBody=element('p','','Toque em 🥷 para testar os cards. GPS somente se você ativar.');status.append(statusTitle,statusBody);status.style.pointerEvents='auto';statusBody.style.maxHeight='30vh';statusBody.style.overflowY='auto';
+    const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('p','zmap-status'),statusBody=status;status.setAttribute('role','status');
     const shade=element('div','zmap-shade');shade.hidden=true;stage.append(canvas,shade);
     let disposed=false,following=true,lastPoint=null,selected=null,index=0,tracker,map,observer,stopTest;
     const testRows=new Map(),testMarkers=[];
+    let diagnostic=null;
+    const infoShade=element('div','zmap-shade zmap-info-shade');infoShade.hidden=true;
+    const info=element('section','zmap-info'),infoHeader=element('div','zmap-info-header'),infoTitle=element('h2','','INFORMAÇÕES DO MAPA'),infoBody=element('div','zmap-info-body');
+    info.setAttribute('role','dialog');info.setAttribute('aria-modal','true');info.setAttribute('aria-label','INFORMAÇÕES DO MAPA');
+    const infoClose=button('×','Fechar informações do mapa',closeInfo,'zmap-close');infoHeader.append(infoTitle,infoClose);info.append(infoHeader,infoBody);infoShade.append(info);stage.append(infoShade);
+    function closeInfo(){infoShade.hidden=true;infoButton.focus({preventScroll:true});}
+    function renderInfo(){
+      if(infoShade.hidden)return;const scroll=infoBody.scrollTop;infoBody.replaceChildren();
+      if(!diagnostic){infoBody.append(element('p','','Aguardando diagnóstico dos cadastros.'));return;}
+      const c=diagnostic;
+      function heading(text){infoBody.append(element('h3','',text));}
+      function metric(label,value){const row=element('div','zmap-info-metric');row.append(element('span','',label),element('strong','',value===undefined?'—':String(value)));infoBody.append(row);}
+      heading('Resumo dos cadastros');
+      for(const [label,key]of [['Total de cadastros fictícios','total'],['Com endereço utilizável','usable'],['Sem endereço utilizável','unusable'],['Localizados','located'],['Aguardando localização','pending'],['Com erro ou endereço rejeitado','error']])metric(label,c[key]);
+      if(c.removed)metric('Cadastros excluídos',c.removed);if(c.loading)metric('Aguardando dados',c.loading);
+      heading('Consultas de geocodificação');
+      if(c.usage){metric('Consultas hoje — usuário',c.usage.userUsed);metric('Limite diário — usuário',c.usage.userLimit);metric('Consultas hoje — global',c.usage.globalUsed);metric('Limite diário — global',c.usage.globalLimit);metric('Consultas restantes',c.usage.remaining);}
+      else infoBody.append(element('p','','Contagem diária ainda indisponível.'));
+      metric('Recuperadas do cache nesta abertura',c.cacheRecovered);metric('Encontradas agora nesta abertura',c.foundNow);
+      infoBody.append(element('p','zmap-info-note','Consumo de localização automática do mapa; dia UTC. Recuperar cache não consome geocodificação.'));
+      heading('CADASTROS PARA REVISÃO');
+      const list=element('div','zmap-review-list');
+      const seen=new Set();for(const row of c.review||[]){if(seen.has(row.id))continue;seen.add(row.id);const entry=element('div','zmap-review-row');entry.append(element('strong','',typeof row.name==='string'?row.name:''),element('p','',typeof row.address==='string'?row.address:''));list.append(entry);}
+      if(!seen.size)list.append(element('p','','Nenhum cadastro aguardando revisão de endereço.'));
+      infoBody.append(list);infoBody.scrollTop=scroll;
+    }
+    const infoButton=button('🥷','Informações do mapa',()=>{closeCard();infoShade.hidden=false;renderInfo();infoClose.focus({preventScroll:true});});
+    infoShade.onclick=e=>{if(e.target===infoShade)closeInfo();};
     const oldOverflow=document.body.style.overflow;
     function closeCard(){shade.hidden=true;shade.replaceChildren();selected=null;}
     function close(){if(disposed)return;disposed=true;stopTest?.();tracker?.dispose();observer?.disconnect();document.removeEventListener('visibilitychange',visibility);root.removeEventListener('pagehide',pagehide);root.removeEventListener('pageshow',pageshow);document.removeEventListener('keydown',keys,true);signal?.removeEventListener('abort',close);root.removeEventListener('zebrol-map-auth-error',authError);map?.destroy();overlay.remove();document.body.style.overflow=oldOverflow;activeSession=null;lastPoint=null;launcher?.focus({preventScroll:true});onClose?.();root.dispatchEvent(new Event('zebrol-update-state'));}
@@ -179,7 +207,7 @@
     shade.onclick=e=>{if(e.target===shade)closeCard();};
     function follow(){following=true;gps.setAttribute('aria-pressed','true');if(lastPoint)map.position(lastPoint,true);tracker.enable();}
     const gps=button('📍','Ativar ou recentralizar GPS',follow);gps.setAttribute('aria-pressed','false');
-    tools.append(gps,button('🥷','Voltar aos marcadores demonstrativos',()=>{following=false;gps.setAttribute('aria-pressed','false');map.home();}));
+    tools.append(gps,infoButton);
     const search=element('form','zmap-search');search.hidden=true;
     const input=element('input');input.type='search';input.placeholder='Rua ou endereço de Altamira';input.setAttribute('aria-label','Pesquisar rua em Altamira');input.maxLength=160;
     const hint=element('p','','Use Rua, Travessa ou Avenida. A consulta digitada será enviada ao Google somente ao tocar em Buscar.');
@@ -204,7 +232,7 @@
     function visibility(){tracker.visibility();if(document.visibilityState!=='visible'){lastPoint=null;map.clearPosition();statusBody.textContent='GPS pausado enquanto o aplicativo está em segundo plano.';}else map.resize();}
     function pagehide(){tracker.dispose();lastPoint=null;map.clearPosition();}
     function pageshow(event){if(event.persisted)close();}
-    function keys(e){if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(!shade.hidden)closeCard();else if(!search.hidden){search.hidden=true;searchToggle.setAttribute('aria-expanded','false');searchToggle.focus();}else close();}if(e.key==='Tab'){const scope=shade.hidden?overlay:shade;const list=[...scope.querySelectorAll('button,input,a,[tabindex="0"]')].filter(el=>!el.disabled&&!el.closest('[hidden]'));if(!list.length)return;const first=list[0],last=list.at(-1);if(e.shiftKey&&(document.activeElement===first||!scope.contains(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&(document.activeElement===last||!scope.contains(document.activeElement))){e.preventDefault();first.focus();}}}
+    function keys(e){if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(!infoShade.hidden)closeInfo();else if(!shade.hidden)closeCard();else if(!search.hidden){search.hidden=true;searchToggle.setAttribute('aria-expanded','false');searchToggle.focus();}else close();}if(e.key==='Tab'){const scope=!infoShade.hidden?infoShade:shade.hidden?overlay:shade;const list=[...scope.querySelectorAll('button,input,a,[tabindex="0"]')].filter(el=>!el.disabled&&!el.closest('[hidden]'));if(!list.length)return;const first=list[0],last=list.at(-1);if(e.shiftKey&&(document.activeElement===first||!scope.contains(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&(document.activeElement===last||!scope.contains(document.activeElement))){e.preventDefault();first.focus();}}}
     try{
       root.addEventListener('zebrol-map-auth-error',authError);
       if(googleFailure)throw new Error(googleFailure);
@@ -218,7 +246,7 @@
         if(row?.testRecord&&point(row))testRows.set(row.id,row);
         for(const marker of testMarkers)marker.remove();testMarkers.length=0;
         for(const g of group([...testRows.values()],point,true))testMarkers.push(map.marker(g.point,g.rows.length,()=>{selected=g;index=0;drawCard();}));
-      },onStatus:(text,counts)=>{if(!disposed){statusBody.textContent=text;if(counts)statusTitle.textContent=counts.located+' localizados · '+counts.pending+' aguardando · Diagnóstico';}},onError:error=>{if(!disposed&&error.name!=='AbortError')statusBody.textContent=error.message;}});
+      },onStatus:(text,counts)=>{if(!disposed){if(counts){diagnostic=counts;renderInfo();}else statusBody.textContent=text;}},onError:error=>{if(!disposed&&error.name!=='AbortError')statusBody.textContent=error.message;}});
       tracker=gpsTracker({geo:navigator.geolocation,point,isVisible:()=>!disposed&&document.visibilityState==='visible',onStatus:text=>{statusBody.textContent=text;gps.setAttribute('aria-pressed','false');},onPoint:p=>{lastPoint=p;map.position(p,following);gps.setAttribute('aria-pressed',String(following));statusBody.textContent='Sua posição · precisão aproximada de '+Math.round(p.accuracy)+' m';}});
       document.addEventListener('visibilitychange',visibility);root.addEventListener('pagehide',pagehide);root.addEventListener('pageshow',pageshow);document.addEventListener('keydown',keys,true);
       signal?.addEventListener('abort',close,{once:true});

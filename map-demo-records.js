@@ -10,6 +10,7 @@
     if(s.rejected)c.rejected++;if(s.ready)c.located++;else if(s.error)c.error++;else c.pending++;
     if(!s.ready){distinct.add(s.key);remaining++;}
    }
+   c.review=[...states.entries()].filter(([,s])=>!s.loading&&!s.removed&&s.usable&&!s.ready&&(s.error||s.rejected)).map(([id,s])=>({id,name:s.name,address:s.address}));
    c.cacheRecovered=cacheIds.size;c.foundNow=freshIds.size;c.usage=usage;
    c.remainingAddresses=distinct.size;c.repeatedAddresses=remaining-distinct.size;
    onStatus?.('Total '+c.total+' · Com endereço utilizável '+c.usable+' · Sem endereço utilizável '+c.unusable+' · Localizados '+c.located+' · Aguardando localização '+c.pending+' · Com erro '+c.error+
@@ -85,7 +86,7 @@
     for(const doc of snapshot.docs){const item={...doc.data(),id:doc.id};if(!chunk.includes(item.id))continue;present.add(item.id);
      const signature=JSON.stringify([item.name,item.type,item.address,item.latitude,item.longitude,item.vulgo,item.photoVersion,item.hasPhoto]);
      if(states.get(item.id)?.signature===signature)continue;
-     remove(item.id);const state=states.get(item.id);state.signature=signature;state.removed=false;
+     remove(item.id);const state=states.get(item.id);state.signature=signature;state.removed=false;state.name=item.name;state.address=item.address;
      if((item.type&&item.type!=='person')||item._pending||!parse(item.address))continue;
      state.usable=true;state.key=JSON.stringify([parse(item.address).cacheKey||parse(item.address).query,point(item)||null]);
      queue.set(item.id,{item,key:state.key,version:state.version});

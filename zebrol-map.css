@@ -50,3 +50,19 @@
 .zmap-search button{padding:0 8px;border-radius:4px;background:#374151;color:white}
 .zmap-search p{flex-basis:100%;font-size:12px;line-height:1.4;margin:0}
 .zmap-shade{z-index:10;padding:calc(env(safe-area-inset-top,0px) + 12px) 12px calc(env(safe-area-inset-bottom,0px) + 12px)}
+
+/* Map information dialog only; marker cards and other panels remain unchanged. */
+.zmap-info-shade{background:#000c}
+.zmap-info{width:100%;max-width:576px;max-height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;overflow-wrap:anywhere;background:#111827;color:#fff;border-radius:4px;font-family:inherit}
+.zmap-info-header{flex-shrink:0;display:flex;align-items:center;position:relative;gap:12px;padding:12px 16px;border-bottom:1px solid #374151}
+.zmap-info-header h2{width:100%;text-align:center;font-weight:600;font-size:16px;padding-right:24px;margin:0}
+.zmap-info-header .zmap-close{position:absolute;right:8px;padding:0 8px}
+.zmap-info-body{overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;min-height:0;padding:12px 16px;font-size:12px;line-height:1.5}
+.zmap-info-body h3{font-size:13px;font-weight:600;margin:16px 0 8px}
+.zmap-info-body h3:first-child{margin-top:0}
+.zmap-info-metric{display:flex;justify-content:space-between;gap:16px;padding:3px 0}
+.zmap-info-metric strong{flex-shrink:0}
+.zmap-info-note{color:#9ca3af;font-size:11px;margin:8px 0}
+.zmap-review-row{padding:8px 0;border-bottom:1px solid rgba(156,163,175,.10);white-space:pre-wrap;overflow-wrap:anywhere}
+.zmap-review-row strong{display:block;font-weight:600}.zmap-review-row p{margin:4px 0 0}
+@media(min-width:640px){.zmap-info-body{font-size:14px}}
