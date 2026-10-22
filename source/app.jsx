@@ -589,7 +589,7 @@ let mapDemoModule;
 function loadMapDemo(){
   if(window.ZebrolMapPhase1)return Promise.resolve(window.ZebrolMapPhase1);
   if(!mapDemoModule)mapDemoModule=new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-39';
+    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-40';
     const timer=setTimeout(()=>fail(),15000);
     function fail(){clearTimeout(timer);script.remove();mapDemoModule=null;reject(new Error('Não foi possível carregar o mapa. Confira a conexão e tente novamente.'));}
     script.onerror=fail;script.onload=()=>{clearTimeout(timer);if(window.ZebrolMapPhase1)resolve(window.ZebrolMapPhase1);else fail();};document.head.appendChild(script);
@@ -622,6 +622,7 @@ function MapDemoButton({user}){
         unsubscribe=window.ZebrolMapDemoRecords.watch({ids:set.ids,signal:controller.signal,
           subscribe:(ids,next,error)=>db.collection('users').doc(dataOwner(user.uid)).collection('items')
             .where(firebase.firestore.FieldPath.documentId(),'in',ids).onSnapshot({includeMetadataChanges:true},next,error),
+          requestBatch:(ids,signal)=>request('/api/map-locations',{ids},signal),
           request:(body,signal)=>request('/api/map-test-record',body,signal),parse:window.ZebrolMapAddress.parse,point:ZebrolLocation.point,
           loadImage:item=>loadThumbnail(user.uid,item),onChange,onError,onStatus});
       }catch(e){if(!stopped&&e.name!=='AbortError')onError(e);}

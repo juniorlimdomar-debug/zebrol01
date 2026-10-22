@@ -2,7 +2,7 @@
   'use strict';
   // Google Maps preview: fictional records only; manual public street search, no Firestore or personal-record geocoding.
   const BOUNDS=[[-3.245,-52.245],[-3.175,-52.175]],CENTER=[-3.205,-52.215];
-  const REV='map-limits-39';
+  const REV='map-batch-40';
   let assets,activeSession=null;
   const assetUrl=file=>new URL(file+'?v='+REV,document.baseURI).href;
   function asset(tag,file){
@@ -45,7 +45,7 @@
   function load(){
     if(navigator.onLine===false)return Promise.reject(new Error('Conecte-se à internet para abrir o Google Maps. Os cadastros offline continuam disponíveis.'));
     if(!assets)assets=Promise.all([asset('link','zebrol-map.css'),
-      asset('script','lib/map-address.js').then(()=>asset('script','lib/map-fixtures.js').then(()=>asset('script','map-demo-records.js')))])
+      asset('script','lib/map-address.js').then(()=>asset('script','map-demo-records.js'))])
       .catch(error=>{assets=null;throw error;});
     return Promise.all([assets,loadGoogle()]);
   }
@@ -155,15 +155,14 @@
     if(activeSession){activeSession.focus();return activeSession;}
     const overlay=element('section','zmap-overlay');overlay.setAttribute('role','dialog');overlay.setAttribute('aria-modal','true');overlay.setAttribute('aria-label','Mapa demonstrativo');
     const controls=element('div','zmap-controls');
-    const caption=element('p','zmap-caption','3 marcadores ilustrativos + cadastros fictícios');
+    const caption=element('p','zmap-caption','Cadastros fictícios autorizados');
     const stage=element('div','zmap-stage'),canvas=element('div','zmap-canvas'),tools=element('div','zmap-tools'),status=element('details','zmap-status'),statusTitle=element('summary','','Diagnóstico dos cadastros'),statusBody=element('p','','Toque em 🥷 para testar os cards. GPS somente se você ativar.');status.append(statusTitle,statusBody);status.style.pointerEvents='auto';statusBody.style.maxHeight='30vh';statusBody.style.overflowY='auto';
     const shade=element('div','zmap-shade');shade.hidden=true;stage.append(canvas,shade);
     let disposed=false,following=true,lastPoint=null,selected=null,index=0,tracker,map,observer,stopTest;
     const testRows=new Map(),testMarkers=[];
-    const fixtureProcessor=root.ZebrolMapFixtures.processor();
     const oldOverflow=document.body.style.overflow;
     function closeCard(){shade.hidden=true;shade.replaceChildren();selected=null;}
-    function close(){if(disposed)return;disposed=true;stopTest?.();fixtureProcessor.dispose();tracker?.dispose();observer?.disconnect();document.removeEventListener('visibilitychange',visibility);root.removeEventListener('pagehide',pagehide);root.removeEventListener('pageshow',pageshow);document.removeEventListener('keydown',keys,true);signal?.removeEventListener('abort',close);root.removeEventListener('zebrol-map-auth-error',authError);map?.destroy();overlay.remove();document.body.style.overflow=oldOverflow;activeSession=null;lastPoint=null;launcher?.focus({preventScroll:true});onClose?.();root.dispatchEvent(new Event('zebrol-update-state'));}
+    function close(){if(disposed)return;disposed=true;stopTest?.();tracker?.dispose();observer?.disconnect();document.removeEventListener('visibilitychange',visibility);root.removeEventListener('pagehide',pagehide);root.removeEventListener('pageshow',pageshow);document.removeEventListener('keydown',keys,true);signal?.removeEventListener('abort',close);root.removeEventListener('zebrol-map-auth-error',authError);map?.destroy();overlay.remove();document.body.style.overflow=oldOverflow;activeSession=null;lastPoint=null;launcher?.focus({preventScroll:true});onClose?.();root.dispatchEvent(new Event('zebrol-update-state'));}
     const exit=button('×','Fechar mapa',close,'zmap-close');controls.append(exit,button('+','Aproximar mapa',()=>map.zoom(1)),button('−','Afastar mapa',()=>map.zoom(-1)));
     function drawCard(){
       shade.replaceChildren();shade.hidden=false;const row=selected.rows[index],area=element('div','zmap-card-area');
@@ -210,9 +209,7 @@
       root.addEventListener('zebrol-map-auth-error',authError);
       if(googleFailure)throw new Error(googleFailure);
       map=provider(root.google.maps,canvas,()=>{following=false;gps.setAttribute('aria-pressed','false');});
-      const examples=fixtures(),prepared=await fixtureProcessor.update(examples),ready=new Set(prepared.filter(row=>row.status==='ready').map(row=>row.id));
       if(disposed||signal?.aborted){close();throw new DOMException('Abertura cancelada.','AbortError');}
-      for(const g of group(examples.filter(row=>ready.has(row.id)),point))map.marker(g.point,g.rows.length,()=>{selected=g;index=0;drawCard();});
       if(watchTestRecord)stopTest=watchTestRecord({signal,onChange:(row,id)=>{
         if(disposed)return;
         id=id||row?.id;

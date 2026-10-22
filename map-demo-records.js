@@ -1,7 +1,7 @@
 (function(root){
  'use strict';
  const attempts=new Map(); // short-lived in-memory pacing, no IndexedDB changes
- function watch({ids,subscribe,request,parse,point,loadImage,onChange,onStatus,onError,signal}){
+ function watch({ids,subscribe,request,requestBatch,parse,point,loadImage,onChange,onStatus,onError,signal}){
   const states=new Map(ids.map(id=>[id,{version:0,loading:true}])),queue=new Map(),pending=new Map(),stops=[],waiting=new Set();let stopped=false,running=false,active,activeId,newLookups=0,blocked=false,lastError='';
   function status(){
    const c={total:ids.length,usable:0,unusable:0,located:0,pending:0,error:0,loading:0,removed:0};const distinct=new Set();let remaining=0;
@@ -15,16 +15,33 @@
     (c.loading?' · Aguardando dados '+c.loading:'')+(c.removed?' · Excluídos '+c.removed:'')+' · Endereços distintos restantes '+distinct.size+' (estimativa, não confirmação geográfica).'+
     (waiting.size||queue.size?' Verificando cache, sem Google.':blocked?' Novas consultas limitadas; cache preservado.':newLookups>=10?' Até 10 novas tentativas por abertura.':'')+(lastError?' '+lastError:''),c);
   }
-  function remove(id,loading=false){const previous=states.get(id);states.set(id,{version:(previous?.version||0)+1,loading,removed:!loading});queue.delete(id);pending.delete(id);if(activeId===id)active?.abort();onChange(null,id);}
+  function remove(id,loading=false){const previous=states.get(id);clearTimeout(previous?.expiryTimer);states.set(id,{version:(previous?.version||0)+1,loading,removed:!loading});queue.delete(id);pending.delete(id);if(activeId===id)active?.abort();onChange(null,id);}
   async function pump(){
    if(stopped||running)return;running=true;
    try{while(!stopped){
     const cachePhase=queue.size>0;
     if(!cachePhase&&(waiting.size||!pending.size||blocked||newLookups>=10))break;
+    if(cachePhase&&requestBatch&&!Object.hasOwn(queue.values().next().value,'cacheData')){
+     const jobs=[...queue.entries()].filter(([,job])=>!Object.hasOwn(job,'cacheData')).slice(0,30);
+     activeId=null;active=new AbortController();
+     try{
+      const response=await requestBatch(jobs.map(([id])=>id),active.signal);if(stopped)break;
+      if(!Array.isArray(response.results))throw Error('Resposta do lote inválida.');
+      const returned=new Map(response.results.map(result=>[result.id,result]));
+      for(const [id,job] of jobs)if(states.get(id)?.version===job.version&&queue.get(id)===job){
+       const data=returned.get(id);job.cacheData=data||{error:'Cadastro ausente na resposta do lote.'};
+      }
+     }catch(e){if(stopped)break;for(const [id,job] of jobs)if(states.get(id)?.version===job.version&&queue.get(id)===job)job.cacheData={error:e.message,status:e.status};}
+     continue;
+    }
     const tasks=cachePhase?queue:pending,[id,job]=tasks.entries().next().value;tasks.delete(id);activeId=id;active=new AbortController();
     const current=()=>!stopped&&states.get(id)?.version===job.version&&!active.signal.aborted;
     try{
-     let data=await request({id,cacheOnly:true},active.signal);if(!current())continue;
+     let data=cachePhase&&Object.hasOwn(job,'cacheData')?job.cacheData:await request({id,cacheOnly:true},active.signal);if(!current())continue;
+     delete job.cacheData;
+     if(data.error)throw Object.assign(Error(data.error),{status:data.status});
+     if(data.removed){remove(id);continue;}
+     if(data.unusable){states.get(id).usable=false;continue;}
      if(data.rejected){states.get(id).error=true;lastError='Endereço rejeitado anteriormente; nova tentativa após '+new Date(data.retryAt).toLocaleString('pt-BR')+'. Corrigir o endereço permite nova avaliação.';continue;}
      const attemptKey=job.key;
      if(data.needsLookup&&cachePhase){pending.set(id,job);continue;}
@@ -39,7 +56,13 @@
      const coordinates=point(job.item),inputKey=JSON.stringify([id,parse(job.item.address).query,coordinates?{lat:coordinates.latitude,lng:coordinates.longitude}:null]);
      if(result.id!==id||result.inputKey!==inputKey)throw Error('Endereço alterado durante a consulta; posição descartada.');
      if(!point({latitude:result.point?.lat,longitude:result.point?.lng}))throw Error('Posição inválida descartada.');
+     if(result.expiresAt!==undefined&&(!Number.isFinite(result.expiresAt)||result.expiresAt<=Date.now()))throw Error('Posição expirada descartada.');
      states.get(id).ready=true;
+     if(result.expiresAt){states.get(id).expiryTimer=setTimeout(()=>{
+      if(stopped||states.get(id)?.version!==job.version)return;
+      const signature=states.get(id).signature;remove(id);const state=states.get(id);Object.assign(state,{signature,usable:true,removed:false,key:job.key});
+      queue.set(id,{item:job.item,key:job.key,version:state.version});status();void pump();
+     },Math.min(2147483647,result.expiresAt-Date.now()));}
      onChange({id,name:job.item.name||'',vulgo:job.item.vulgo||'',latitude:result.point.lat,longitude:result.point.lng,
        note:result.note,precision:result.approximate?'aproximada':'localizada',testRecord:true,loadImage:()=>loadImage(job.item)},id);
      if(!cachePhase)for(const [other,task] of pending)if(task.key===job.key){pending.delete(other);queue.set(other,task);}
@@ -59,15 +82,15 @@
      if(states.get(item.id)?.signature===signature)continue;
      remove(item.id);const state=states.get(item.id);state.signature=signature;state.removed=false;
      if((item.type&&item.type!=='person')||item._pending||!parse(item.address))continue;
-     state.usable=true;state.key=JSON.stringify([parse(item.address).query,point(item)||null]);
+     state.usable=true;state.key=JSON.stringify([parse(item.address).cacheKey||parse(item.address).query,point(item)||null]);
      queue.set(item.id,{item,key:state.key,version:state.version});
     }
     for(const id of chunk)if(!present.has(id))remove(id);
-    status();void pump();
+    status();void Promise.resolve().then(pump);
    },e=>{if(!stopped){waiting.delete(i);for(const id of chunk)remove(id,true);lastError=e.message;onError(e);status();void pump();}}));
   }
   status();
-  const stop=()=>{if(stopped)return;stopped=true;active?.abort();queue.clear();pending.clear();for(const fn of stops)fn();states.clear();signal?.removeEventListener('abort',stop);};
+  const stop=()=>{if(stopped)return;stopped=true;active?.abort();queue.clear();pending.clear();for(const fn of stops)fn();for(const s of states.values())clearTimeout(s.expiryTimer);states.clear();signal?.removeEventListener('abort',stop);};
   signal?.addEventListener('abort',stop,{once:true});if(signal?.aborted)stop();return stop;
  }
  root.ZebrolMapDemoRecords={watch};

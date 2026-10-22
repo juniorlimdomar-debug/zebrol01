@@ -159,4 +159,4 @@ async function handler(req,res){
   }finally{if(locked)await cache.release().catch(()=>{});}
 }
 module.exports=handler;
-module.exports._test={street,accepted,record,quota,authenticate,json,ROOT,OWNER};
+module.exports._test={street,accepted,record,parseRecord,quota,authenticate,json,ROOT,OWNER};
