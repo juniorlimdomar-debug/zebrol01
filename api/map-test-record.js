@@ -1,5 +1,5 @@
 'use strict';
-// Preview-only, read-only endpoint. Never accepts a record ID or an address.
+// Preview-only, read-only endpoint. Accepts only authorized cohort IDs, never client-supplied addresses.
 const crypto=require('node:crypto');
 const addresses=require('../lib/map-address.js');
 const locationCache=require('../lib/map-location-cache.js');
@@ -78,26 +78,42 @@ function parseRecord(doc,cohort){
   const id=doc.name.split('/').pop();
   return {id,address,point,inputKey:JSON.stringify([id,address,point])};
 }
-async function quota(uid){
+function quotaKeys(uid){
+  const day=new Date().toISOString().slice(0,10),hash=crypto.createHash('sha256').update(uid).digest('hex');
+  return {day,keys:['zebrol:test-map:global:'+day,'zebrol:test-map:'+hash+':'+day]};
+}
+function quotaView(day,globalUsed,userUsed){
+  if(![globalUsed,userUsed].every(n=>Number.isSafeInteger(n)&&n>=0))throw fail(503,'Contagem de consultas indisponível.');
+  return {day,globalUsed,userUsed,globalLimit:100,userLimit:100,remaining:Math.max(0,Math.min(100-globalUsed,100-userUsed))};
+}
+async function quotaCommand(command){
   const url=process.env.KV_REST_API_URL,token=process.env.KV_REST_API_TOKEN;
-  if(!url||!token||!url.startsWith('https://'))throw fail(503,'A consulta do endereço aguarda configuração do limite compartilhado de requisições na prévia.');
-  // Atomic global + per-user daily limits, shared across serverless instances.
-  const day=new Date().toISOString().slice(0,10);
-  const hash=crypto.createHash('sha256').update(uid).digest('hex');
-  const script="local a=tonumber(redis.call('GET',KEYS[1]) or '0'); local b=tonumber(redis.call('GET',KEYS[2]) or '0'); if a>=60 or b>=50 then return 0 end; redis.call('INCR',KEYS[1]); redis.call('EXPIRE',KEYS[1],172800); redis.call('INCR',KEYS[2]); redis.call('EXPIRE',KEYS[2],172800); return 1";
-  const {data}=await json(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body:JSON.stringify(['EVAL',script,2,'zebrol:test-map:global:'+day,'zebrol:test-map:'+hash+':'+day])});
-  if(data.error||![0,1].includes(data.result))throw fail(503,'Não foi possível validar o limite de consultas. Tente novamente mais tarde.');
-  if(data.result!==1){
+  if(!url||!token||!url.startsWith('https://'))throw fail(503,'A consulta aguarda configuração do limite compartilhado.');
+  const {data}=await json(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(command)});
+  if(data.error)throw fail(503,'Não foi possível validar o limite de consultas.');return data.result;
+}
+async function quotaStatus(uid){
+  const {day,keys}=quotaKeys(uid),values=await quotaCommand(['MGET',...keys]);
+  if(!Array.isArray(values)||values.length!==2)throw fail(503,'Contagem indisponível.');
+  return quotaView(day,...values.map(v=>v===null?0:Number(v)));
+}
+async function quota(uid){
+  const {day,keys}=quotaKeys(uid);
+  // Reserve atomically immediately before dispatch; shared counters retain their namespace.
+  const script="local a=tonumber(redis.call('GET',KEYS[1]) or '0'); local b=tonumber(redis.call('GET',KEYS[2]) or '0'); if a>=100 or b>=100 then return {0,a,b} end; redis.call('INCR',KEYS[1]); redis.call('EXPIRE',KEYS[1],172800); redis.call('INCR',KEYS[2]); redis.call('EXPIRE',KEYS[2],172800); return {1,a+1,b+1}";
+  const values=await quotaCommand(['EVAL',script,2,...keys]);
+  if(!Array.isArray(values)||values.length!==3||![0,1].includes(values[0]))throw fail(503,'Não foi possível validar o limite de consultas.');
+  const usage=quotaView(day,values[1],values[2]);
+  if(values[0]!==1){
     const next=new Date();next.setUTCHours(24,0,0,0);
-    throw Object.assign(fail(429,'Limite diário de novas consultas atingido. Nova tentativa após '+next.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (horário de Brasília).'),{retryAt:next.toISOString()});
-  }
+    throw Object.assign(fail(429,'Limite diário de novas consultas atingido. Nova tentativa após '+next.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (horário de Brasília).'),{retryAt:next.toISOString(),usage});
+  }return usage;
 }
 function accepted(row){
   return addresses.municipal(row);
 }
 async function handler(req,res){
-  let cache,locked=false,lookupAttempted=false;
+  let cache,locked=false,lookupAttempted=false,usage;
   res.setHeader('Cache-Control','no-store');
   if(req.method!=='POST'){res.setHeader('Allow','POST');return res.status(405).json({error:'Método não permitido.'});}
   try{
@@ -130,7 +146,7 @@ async function handler(req,res){
     if(rejectedAfterLock)return res.status(200).json({record:null,rejected:true,retryAt:rejectedAfterLock});
     const key=process.env.GOOGLE_GEOCODING_API_KEY;
     if(!key)throw fail(503,'GOOGLE_GEOCODING_API_KEY ainda não está disponível nesta prévia.');
-    await quota(uid);
+    usage=await quota(uid);
     // Keep existing coordinates, but validate their municipality before displaying.
     const query=new URLSearchParams(row.point?{latlng:row.point.lat+','+row.point.lng,language:'pt-BR',key}:
       {address:row.address+', Altamira, Pará, Brasil',
@@ -143,20 +159,20 @@ async function handler(req,res){
     const matches=(data.results||[]).filter(result=>addresses.quality(result,parsed));
     if(row.point){
       if(!matches.length)throw fail(422,'As coordenadas existentes não foram confirmadas em Altamira–PA.');
-      return res.status(200).json({record:await cache.write({id:row.id,inputKey:row.inputKey,point:row.point,source:'existing',approximate:true,
+      return res.status(200).json({usage,lookupAttempted:true,record:await cache.write({id:row.id,inputKey:row.inputKey,point:row.point,source:'existing',approximate:true,
         note:'Coordenadas do cadastro; endereço e município confirmados. Confira a posição no mapa.'})});
     }
     if(matches.length!==1)throw fail(422,'Endereço ambíguo ou fora de Altamira–PA. Confira o cadastro.');
     const result=matches[0],point=result.geometry?.location;
     if(!point||!Number.isFinite(point.lat)||!Number.isFinite(point.lng)||Math.abs(point.lat)>90||Math.abs(point.lng)>180)throw fail(422,'Localização inválida.');
     const approximate=addresses.quality(result,parsed).approximate;
-    return res.status(200).json({record:await cache.write({id:row.id,inputKey:row.inputKey,point,source:'google',
+    return res.status(200).json({usage,lookupAttempted:true,record:await cache.write({id:row.id,inputKey:row.inputKey,point,source:'google',
       approximate,note:approximate?'Localização aproximada do endereço':'Endereço localizado pelo Google; confira a posição'})});
   }catch(error){
     if(locked&&lookupAttempted&&error.status===422)await cache.writeRejected().catch(()=>{});
     if(error.retryAt)res.setHeader('Retry-After',String(Math.max(1,Math.ceil((Date.parse(error.retryAt)-Date.now())/1000))));
-    return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.',lookupAttempted,...(error.retryAt?{retryAt:error.retryAt}:{})});
+    return res.status(error.status||503).json({error:error.status?error.message:'Não foi possível consultar o teste agora.',lookupAttempted,rejected:lookupAttempted&&error.status===422,usage:error.usage||usage,...(error.retryAt?{retryAt:error.retryAt}:{})});
   }finally{if(locked)await cache.release().catch(()=>{});}
 }
 module.exports=handler;
-module.exports._test={street,accepted,record,parseRecord,quota,authenticate,json,ROOT,OWNER};
+module.exports._test={street,accepted,record,parseRecord,quota,quotaStatus,authenticate,json,ROOT,OWNER};

@@ -589,7 +589,7 @@ let mapDemoModule;
 function loadMapDemo(){
   if(window.ZebrolMapPhase1)return Promise.resolve(window.ZebrolMapPhase1);
   if(!mapDemoModule)mapDemoModule=new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-40';
+    const script=document.createElement('script');script.src='zebrol-map.js?v=map-demo-41';
     const timer=setTimeout(()=>fail(),15000);
     function fail(){clearTimeout(timer);script.remove();mapDemoModule=null;reject(new Error('Não foi possível carregar o mapa. Confira a conexão e tente novamente.'));}
     script.onerror=fail;script.onload=()=>{clearTimeout(timer);if(window.ZebrolMapPhase1)resolve(window.ZebrolMapPhase1);else fail();};document.head.appendChild(script);
@@ -611,7 +611,7 @@ function MapDemoButton({user}){
       const token=await account.getIdToken();
       const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store',signal:requestSignal});
       const payload=await response.json();
-      if(!response.ok)throw Object.assign(new Error(payload.error||'Não foi possível consultar o conjunto fictício.'),{status:response.status,lookupAttempted:payload.lookupAttempted===true});
+      if(!response.ok)throw Object.assign(new Error(payload.error||'Não foi possível consultar o conjunto fictício.'),{status:response.status,lookupAttempted:payload.lookupAttempted===true,rejected:payload.rejected===true,usage:payload.usage});
       if(auth.currentUser?.uid!==account.uid)throw new Error('Sessão alterada.');
       return payload;
     };

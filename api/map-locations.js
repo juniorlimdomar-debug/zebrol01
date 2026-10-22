@@ -1,5 +1,5 @@
 'use strict';
-const {authenticate,json,ROOT,OWNER,parseRecord}=require('./map-test-record')._test;
+const {authenticate,json,ROOT,OWNER,parseRecord,quotaStatus}=require('./map-test-record')._test;
 const cohort=require('../lib/map-demo-set');
 const cache=require('../lib/map-location-cache');
 module.exports=async(req,res)=>{
@@ -28,6 +28,6 @@ module.exports=async(req,res)=>{
    try{rows.push(parseRecord(doc,true));}catch(e){results.set(id,{id,record:null,unusable:true});}
   }
   for(const row of await cache.readMany(json,rows))results.set(row.id,row);
-  return res.status(200).json({results:ids.map(id=>results.get(id))});
+  return res.status(200).json({results:ids.map(id=>results.get(id)),usage:await quotaStatus(uid).catch(()=>null)});
  }catch(e){return res.status(e.status||503).json({error:e.status?e.message:'Não foi possível recuperar as localizações. Nenhuma geocodificação foi iniciada.'});}
 };

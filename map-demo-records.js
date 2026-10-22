@@ -2,30 +2,33 @@
  'use strict';
  const attempts=new Map(); // short-lived in-memory pacing, no IndexedDB changes
  function watch({ids,subscribe,request,requestBatch,parse,point,loadImage,onChange,onStatus,onError,signal}){
-  const states=new Map(ids.map(id=>[id,{version:0,loading:true}])),queue=new Map(),pending=new Map(),stops=[],waiting=new Set();let stopped=false,running=false,active,activeId,newLookups=0,blocked=false,lastError='';
+  const states=new Map(ids.map(id=>[id,{version:0,loading:true}])),queue=new Map(),pending=new Map(),stops=[],waiting=new Set();let stopped=false,running=false,active,activeId,newLookups=0,blocked=false,lastError='',usage=null;const freshIds=new Set(),cacheIds=new Set();
   function status(){
-   const c={total:ids.length,usable:0,unusable:0,located:0,pending:0,error:0,loading:0,removed:0};const distinct=new Set();let remaining=0;
+   const c={total:ids.length,usable:0,unusable:0,located:0,pending:0,error:0,loading:0,removed:0,rejected:0};const distinct=new Set();let remaining=0;
    for(const s of states.values()){
     if(s.loading){c.loading++;continue;}if(s.removed){c.removed++;continue;}if(!s.usable){c.unusable++;continue;}c.usable++;
-    if(s.ready)c.located++;else if(s.error)c.error++;else c.pending++;
+    if(s.rejected)c.rejected++;if(s.ready)c.located++;else if(s.error)c.error++;else c.pending++;
     if(!s.ready){distinct.add(s.key);remaining++;}
    }
+   c.cacheRecovered=cacheIds.size;c.foundNow=freshIds.size;c.usage=usage;
    c.remainingAddresses=distinct.size;c.repeatedAddresses=remaining-distinct.size;
    onStatus?.('Total '+c.total+' · Com endereço utilizável '+c.usable+' · Sem endereço utilizável '+c.unusable+' · Localizados '+c.located+' · Aguardando localização '+c.pending+' · Com erro '+c.error+
+    ' · Recuperados do cache nesta abertura '+cacheIds.size+' · Encontrados agora '+freshIds.size+' · Endereços rejeitados '+c.rejected+
+    (usage?' · Geocodificações do mapa hoje (UTC): usuário '+usage.userUsed+'/'+usage.userLimit+', global '+usage.globalUsed+'/'+usage.globalLimit+' · Restantes '+usage.remaining:' · Cota diária: aguardando consulta ao servidor.')+
     (c.loading?' · Aguardando dados '+c.loading:'')+(c.removed?' · Excluídos '+c.removed:'')+' · Endereços distintos restantes '+distinct.size+' (estimativa, não confirmação geográfica).'+
-    (waiting.size||queue.size?' Verificando cache, sem Google.':blocked?' Novas consultas limitadas; cache preservado.':newLookups>=10?' Até 10 novas tentativas por abertura.':'')+(lastError?' '+lastError:''),c);
+    (waiting.size||queue.size?' Verificando cache, sem Google.':blocked?' Novas consultas limitadas; cache preservado.':newLookups>=50?' Até 50 novas tentativas por abertura.':'')+(lastError?' '+lastError:''),c);
   }
   function remove(id,loading=false){const previous=states.get(id);clearTimeout(previous?.expiryTimer);states.set(id,{version:(previous?.version||0)+1,loading,removed:!loading});queue.delete(id);pending.delete(id);if(activeId===id)active?.abort();onChange(null,id);}
   async function pump(){
    if(stopped||running)return;running=true;
    try{while(!stopped){
     const cachePhase=queue.size>0;
-    if(!cachePhase&&(waiting.size||!pending.size||blocked||newLookups>=10))break;
+    if(!cachePhase&&(waiting.size||!pending.size||blocked||newLookups>=50))break;
     if(cachePhase&&requestBatch&&!Object.hasOwn(queue.values().next().value,'cacheData')){
      const jobs=[...queue.entries()].filter(([,job])=>!Object.hasOwn(job,'cacheData')).slice(0,30);
      activeId=null;active=new AbortController();
      try{
-      const response=await requestBatch(jobs.map(([id])=>id),active.signal);if(stopped)break;
+      const response=await requestBatch(jobs.map(([id])=>id),active.signal);if(stopped)break;if(response.usage)usage=response.usage;
       if(!Array.isArray(response.results))throw Error('Resposta do lote inválida.');
       const returned=new Map(response.results.map(result=>[result.id,result]));
       for(const [id,job] of jobs)if(states.get(id)?.version===job.version&&queue.get(id)===job){
@@ -38,26 +41,28 @@
     const current=()=>!stopped&&states.get(id)?.version===job.version&&!active.signal.aborted;
     try{
      let data=cachePhase&&Object.hasOwn(job,'cacheData')?job.cacheData:await request({id,cacheOnly:true},active.signal);if(!current())continue;
-     delete job.cacheData;
+     delete job.cacheData;if(data.usage)usage=data.usage;
      if(data.error)throw Object.assign(Error(data.error),{status:data.status});
      if(data.removed){remove(id);continue;}
      if(data.unusable){states.get(id).usable=false;continue;}
-     if(data.rejected){states.get(id).error=true;lastError='Endereço rejeitado anteriormente; nova tentativa após '+new Date(data.retryAt).toLocaleString('pt-BR')+'. Corrigir o endereço permite nova avaliação.';continue;}
+     if(data.rejected){states.get(id).error=true;states.get(id).rejected=true;lastError='Endereço rejeitado anteriormente; nova tentativa após '+new Date(data.retryAt).toLocaleString('pt-BR')+'. Corrigir o endereço permite nova avaliação.';continue;}
      const attemptKey=job.key;
      if(data.needsLookup&&cachePhase){pending.set(id,job);continue;}
-     if(data.needsLookup&&!blocked&&newLookups<10&&!(attempts.get(attemptKey)>Date.now())){
+     if(data.needsLookup&&!blocked&&newLookups<50&&!(attempts.get(attemptKey)>Date.now())){
       newLookups++;attempts.set(attemptKey,Date.now()+600000);
       for(const [key,until] of attempts)if(until<=Date.now())attempts.delete(key);
       if(attempts.size>600)attempts.delete(attempts.keys().next().value);
       data=await request({id},active.signal);if(!current())continue;
      }
-     if(data.rejected){states.get(id).error=true;status();continue;}
+     if(data.usage)usage=data.usage;
+     if(data.rejected){states.get(id).error=true;states.get(id).rejected=true;status();continue;}
      const result=data.record;if(!result){status();continue;}
      const coordinates=point(job.item),inputKey=JSON.stringify([id,parse(job.item.address).query,coordinates?{lat:coordinates.latitude,lng:coordinates.longitude}:null]);
      if(result.id!==id||result.inputKey!==inputKey)throw Error('Endereço alterado durante a consulta; posição descartada.');
      if(!point({latitude:result.point?.lat,longitude:result.point?.lng}))throw Error('Posição inválida descartada.');
      if(result.expiresAt!==undefined&&(!Number.isFinite(result.expiresAt)||result.expiresAt<=Date.now()))throw Error('Posição expirada descartada.');
      states.get(id).ready=true;
+     if(data.lookupAttempted)freshIds.add(id);else cacheIds.add(id);
      if(result.expiresAt){states.get(id).expiryTimer=setTimeout(()=>{
       if(stopped||states.get(id)?.version!==job.version)return;
       const signature=states.get(id).signature;remove(id);const state=states.get(id);Object.assign(state,{signature,usable:true,removed:false,key:job.key});
@@ -66,7 +71,7 @@
      onChange({id,name:job.item.name||'',vulgo:job.item.vulgo||'',latitude:result.point.lat,longitude:result.point.lng,
        note:result.note,precision:result.approximate?'aproximada':'localizada',testRecord:true,loadImage:()=>loadImage(job.item)},id);
      if(!cachePhase)for(const [other,task] of pending)if(task.key===job.key){pending.delete(other);queue.set(other,task);}
-    }catch(e){if(current()&&e.name!=='AbortError'){if(e.status===429)blocked=true;if(e.lookupAttempted)states.get(id).error=true;lastError=e.message;onError(e);}}
+    }catch(e){if(current()&&e.name!=='AbortError'){if(e.usage)usage=e.usage;if(e.status===429)blocked=true;if(e.rejected)states.get(id).rejected=true;if(e.lookupAttempted)states.get(id).error=true;lastError=e.message;onError(e);}}
     finally{activeId=null;status();}
    }}finally{running=false;}
   }
